@@ -1,5 +1,5 @@
 import os
-import rasterio
+import tifffile
 import torch
 
 class MultiChannelDataset(torch.utils.data.IterableDataset):
@@ -23,19 +23,15 @@ class MultiChannelDataset(torch.utils.data.IterableDataset):
         with os.scandir(self.data_path) as mc_imgs:
             for idx, mc_img in enumerate(mc_imgs):
 
-                # Expects one subdirectory per multi-channel image
                 if idx % num_workers != worker_id:
                     continue
 
-                # Yields a num_views x height x width x channels tensor
+                # Yields a num_views x channels x height x width tensor
+                mc_img_c_h_w = torch.from_numpy(tifffile.imread(mc_img.path))
 
-                bands = []
-                for entry in os.scandir(mc_img):
-                    with rasterio.open(entry.path) as src:
-                        bands.append(src.read(1))
-                mc_img_h_w_c = torch.stack(bands, dim=-1)
-
-                views = torch.stack([self.transform(mc_img_h_w_c) if self.transform else mc_img_h_w_c for _ in range(self.num_views)], dim=0)
+                views = torch.stack(
+                    [self.transform(mc_img_c_h_w) if self.transform else mc_img_c_h_w for _ in range(self.num_views)],
+                    dim=0)
                 
                 yield views
 
@@ -44,14 +40,8 @@ class MultiChannelDataset(torch.utils.data.IterableDataset):
 Expects following directory structure:
 dataset
 |-- train
-|   |-- img_1
-        |-- img_1_band_1.tiff
-        |-- img_1_band_2.tiff
-        |-- ...
-    |-- img_2
-        |-- img_2_band_1.tiff
-        |-- img_2_band_2.tiff
-        |-- ...
+|   |-- img_1.tiff
+|   |-- img_2.tiff
 |   |-- ...
 |-- test
     |-- ...
