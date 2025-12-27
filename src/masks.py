@@ -195,3 +195,9 @@ class MultiBlockMaskCollator(object):
         collated_masks_enc = torch.utils.data.default_collate(collated_masks_enc)
 
         return collated_batch, collated_masks_enc, collated_masks_pred
+
+"""
+Basically, we want to apply same collator function to the masks.
+Collator just calls __getitem__(idx) where idx is obtained from the sampler, and stacks them with batch_size as outer size of tensor
+Masks are just a list.
+"""
