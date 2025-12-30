@@ -2,6 +2,7 @@
 
 from multiprocessing import Value
 import torch
+import math
 
 class DefaultCollator(object):
     def __call__(self, batch):
@@ -99,8 +100,8 @@ class MultiBlockMaskCollator(object):
         min_ar, max_ar = aspect_ratio_scale
         aspect_ratio = min_ar + _rand * (max_ar - min_ar)
         # -- Compute block height and width (given scale and aspect-ratio)
-        h = int(round(torch.sqrt(max_keep * aspect_ratio)))
-        w = int(round(torch.sqrt(max_keep / aspect_ratio)))
+        h = int(round(math.sqrt(max_keep * aspect_ratio)))
+        w = int(round(math.sqrt(max_keep / aspect_ratio)))
         while h >= self.height:
             h -= 1
         while w >= self.width:

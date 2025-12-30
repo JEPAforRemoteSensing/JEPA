@@ -454,7 +454,7 @@ class VisionTransformerPredictor(nn.Module):
         # Create mask tokens with positional embeddings for target positions
         pos_embs = self.predictor_pos_embed.repeat(B, 1, 1)
         pos_embs = apply_masks(pos_embs, masks)
-        pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
+        # pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
         
         # Initialize prediction tokens
         pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)

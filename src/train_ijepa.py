@@ -9,12 +9,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import wandb
 
 from encoder import build_encoder, get_num_patches
 from predictor import build_predictor_for_encoder
 from data_loading import load_data
 from masks import MultiBlockMaskCollator
-from transforms import make_transforms
+from transforms import make_transforms_rgb
 from utils import apply_masks, repeat_interleave_batch
 
 # Logging setup
@@ -191,10 +192,6 @@ def train_one_epoch(
         # Move to device
         images = images.to(device, non_blocking=True)
         
-        # Handle different image formats (with or without view dimension)
-        if images.dim() == 5:  # (B, N_views, C, H, W)
-            images = images[:, 0]  # Take first view
-        
         masks_enc = [m.to(device, non_blocking=True) for m in masks_enc]
         masks_pred = [m.to(device, non_blocking=True) for m in masks_pred]
         
@@ -204,10 +201,11 @@ def train_one_epoch(
             with torch.no_grad():
                 h = target_encoder(images)
                 h = F.layer_norm(h, (h.size(-1),))
-                B = h.size(0)
+                B = len(h)
+                # print("h shape:", h.shape)
                 # Extract target patches
                 h = apply_masks(h, masks_pred)
-                h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+                # h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
             
             # Context representations
             z = encoder(images, masks_enc)
@@ -243,6 +241,15 @@ def train_one_epoch(
                 f'Loss: {loss_meter.avg:.4f} '
                 f'LR: {scheduler.get_last_lr()[0]:.6f}'
             )
+            
+            # Log to wandb
+            wandb.log({
+                'train/loss': loss_meter.val,
+                'train/loss_avg': loss_meter.avg,
+                'train/lr': scheduler.get_last_lr()[0],
+                'train/ema_momentum': m,
+                'epoch': epoch,
+            })
     
     return loss_meter.avg
 
@@ -259,6 +266,14 @@ def main(args):
         logger.warning("CUDA not available, using CPU")
     
     logger.info(f"Using device: {device}")
+    
+    # Initialize wandb
+    wandb.init(
+        project=args.wandb_project,
+        name=args.wandb_run_name,
+        config=vars(args),
+        mode="online" if args.wandb_enabled else "disabled",
+    )
     
     # Initialize models
     encoder, predictor = init_model(
@@ -277,26 +292,10 @@ def main(args):
         p.requires_grad = False
     
     # Create mask collator
-    mask_collator = MultiBlockMaskCollator(
-        input_size=(args.crop_size, args.crop_size),
-        patch_size=args.patch_size,
-        enc_mask_scale=args.enc_mask_scale,
-        pred_mask_scale=args.pred_mask_scale,
-        aspect_ratio=args.aspect_ratio,
-        nenc=args.num_enc_masks,
-        npred=args.num_pred_masks,
-        min_keep=args.min_keep,
-        allow_overlap=args.allow_overlap,
-    )
+    mask_collator = MultiBlockMaskCollator()
     
     # Create transforms
-    transform = make_transforms(
-        crop_size=args.crop_size,
-        crop_scale=args.crop_scale,
-        horizontal_flip=args.horizontal_flip,
-        color_distortion=args.color_distortion,
-        gaussian_blur=args.gaussian_blur,
-    )
+    transform = make_transforms_rgb(num_channels=3)
     
     # Create data loader
     data_loader = load_data(
@@ -308,7 +307,6 @@ def main(args):
         collate_fn=mask_collator,
         pin_memory=True,
         drop_last=True,
-        num_views=1,
         transform=transform,
     )
     
@@ -352,6 +350,12 @@ def main(args):
         
         logger.info(f'Epoch {epoch} completed. Avg Loss: {avg_loss:.4f}')
         
+        # Log epoch summary to wandb
+        wandb.log({
+            'epoch': epoch,
+            'train/epoch_loss': avg_loss,
+        })
+        
         # Save checkpoint
         if epoch % args.save_freq == 0 or epoch == args.epochs:
             checkpoint = {
@@ -367,8 +371,13 @@ def main(args):
             os.makedirs(args.output_dir, exist_ok=True)
             torch.save(checkpoint, save_path)
             logger.info(f'Saved checkpoint to {save_path}')
+            
+            # Log checkpoint to wandb
+            if args.wandb_enabled:
+                wandb.save(save_path)
     
     logger.info("Training completed!")
+    wandb.finish()
 
 
 def parse_args():
@@ -416,6 +425,11 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
     parser.add_argument('--save_freq', type=int, default=50)
+    
+    # Weights & Biases
+    parser.add_argument('--wandb_enabled', action='store_true', help='Enable wandb logging')
+    parser.add_argument('--wandb_project', type=str, default='ijepa', help='Wandb project name')
+    parser.add_argument('--wandb_run_name', type=str, default=None, help='Wandb run name')
     
     return parser.parse_args()
 
