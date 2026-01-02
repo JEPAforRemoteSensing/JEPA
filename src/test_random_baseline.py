@@ -1,10 +1,8 @@
 """
-I-JEPA Testing Script
+Random Baseline Testing Script
 
-Test the trained I-JEPA model by:
-1. Encoding query images from test set
-2. Finding top-k similar images from validation set
-3. Computing F1 score based on multi-label classification using one-hot labels
+Test a randomly initialized model to establish baseline performance.
+Uses the same evaluation protocol as test_ijepa.py for fair comparison.
 """
 
 import os
@@ -55,8 +53,12 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         return len(self.metadata)
 
 
-def load_model(checkpoint_path, device, model_name='vit_base', patch_size=16, crop_size=224, in_chans=3):
-    """Load the trained encoder from checkpoint."""
+def create_random_model(device, model_name='vit_base', patch_size=16, crop_size=224, in_chans=3, seed=42):
+    """Create a randomly initialized encoder (no pretrained weights)."""
+    
+    # Set seed for reproducibility
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     
     encoder, embed_dim = build_encoder(
         model_name=model_name,
@@ -65,17 +67,22 @@ def load_model(checkpoint_path, device, model_name='vit_base', patch_size=16, cr
         in_chans=in_chans,
     )
     
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Reinitialize weights randomly (in case build_encoder uses any pretrained weights)
+    def _init_weights(m):
+        if isinstance(m, torch.nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, torch.nn.LayerNorm):
+            torch.nn.init.ones_(m.weight)
+            torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, torch.nn.Conv2d):
+            torch.nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
     
-    # Load target encoder (EMA encoder used for inference)
-    if 'target_encoder' in checkpoint:
-        encoder.load_state_dict(checkpoint['target_encoder'])
-        logger.info("Loaded target encoder from checkpoint")
-    elif 'encoder' in checkpoint:
-        encoder.load_state_dict(checkpoint['encoder'])
-        logger.info("Loaded encoder from checkpoint")
-    else:
-        raise ValueError("No encoder found in checkpoint")
+    encoder.apply(_init_weights)
+    logger.info(f"Created randomly initialized {model_name} encoder (seed={seed})")
     
     encoder = encoder.to(device)
     encoder.eval()
@@ -109,45 +116,16 @@ def extract_embeddings(encoder, data_loader, device):
     return embeddings, patch_ids
 
 
-def build_knn_index(gallery_embeddings, k=10, metric='cosine'):
-    """
-    Build a KNN index using scikit-learn's NearestNeighbors.
-    
-    Args:
-        gallery_embeddings: (N, embed_dim) gallery embeddings
-        k: number of neighbors to retrieve
-        metric: distance metric ('cosine', 'euclidean', etc.)
-    
-    Returns:
-        Fitted NearestNeighbors model
-    """
-    from sklearn.neighbors import NearestNeighbors
-    
-    knn = NearestNeighbors(n_neighbors=k, metric=metric, algorithm='auto')
-    knn.fit(gallery_embeddings.numpy())
-    return knn
+def compute_similarity(query_embeddings, gallery_embeddings):
+    """Compute cosine similarity between query and gallery embeddings."""
+    similarity = torch.mm(query_embeddings, gallery_embeddings.t())
+    return similarity
 
 
-def get_topk_indices_knn(knn, query_embeddings, k=10):
-    """
-    Get top-k most similar gallery indices for each query using KNN.
-    
-    Args:
-        knn: Fitted NearestNeighbors model
-        query_embeddings: (N, embed_dim) query embeddings
-        k: number of neighbors to retrieve
-    
-    Returns:
-        topk_idx: (N, k) indices of top-k neighbors
-        topk_distances: (N, k) distances to top-k neighbors
-    """
-    distances, indices = knn.kneighbors(query_embeddings.numpy(), n_neighbors=k)
-    
-    # Convert distances to similarity scores (for cosine: similarity = 1 - distance)
-    # Note: sklearn's cosine metric returns distance, not similarity
-    similarities = 1 - distances
-    
-    return torch.from_numpy(indices), torch.from_numpy(similarities)
+def get_topk_indices(similarity, k=10):
+    """Get top-k most similar gallery indices for each query."""
+    topk_sim, topk_idx = torch.topk(similarity, k=k, dim=1, largest=True)
+    return topk_idx, topk_sim
 
 
 def load_labels(metadata_path, patch_ids):
@@ -172,17 +150,8 @@ def load_labels(metadata_path, patch_ids):
     return np.stack(labels)
 
 
-def compute_f1_score(query_labels, predicted_labels, average='micro'):
-    """
-    Compute F1 score for multi-label classification.
-    
-    For each query, the predicted label is the union (or majority vote) of top-k retrieved labels.
-    
-    Args:
-        query_labels: (N, num_classes) one-hot ground truth
-        predicted_labels: (N, num_classes) predicted probabilities or votes
-        average: 'micro', 'macro', or 'samples'
-    """
+def compute_f1_score(query_labels, predicted_labels):
+    """Compute F1 score for multi-label classification."""
     from sklearn.metrics import f1_score, precision_score, recall_score
     
     # Convert to binary predictions (threshold at 0.5 for votes)
@@ -218,15 +187,15 @@ def main(args):
     
     logger.info(f"Using device: {device}")
     
-    # Load model
-    logger.info(f"Loading model from {args.checkpoint}")
-    encoder = load_model(
-        checkpoint_path=args.checkpoint,
+    # Create random model
+    logger.info("Creating randomly initialized model...")
+    encoder = create_random_model(
         device=device,
         model_name=args.model_name,
         patch_size=args.patch_size,
         crop_size=args.crop_size,
         in_chans=args.in_chans,
+        seed=args.seed,
     )
     
     # Create transforms
@@ -274,13 +243,13 @@ def main(args):
     logger.info(f"Test embeddings shape: {test_embeddings.shape}")
     logger.info(f"Validation embeddings shape: {val_embeddings.shape}")
     
-    # Build KNN index from validation embeddings
-    logger.info(f"Building KNN index with k={args.top_k}...")
-    knn = build_knn_index(val_embeddings, k=args.top_k, metric='cosine')
+    # Compute similarity
+    logger.info("Computing similarity matrix...")
+    similarity = compute_similarity(test_embeddings, val_embeddings)
     
-    # Get top-k indices using KNN
-    logger.info(f"Finding top-{args.top_k} similar images using KNN...")
-    topk_idx, topk_sim = get_topk_indices_knn(knn, test_embeddings, k=args.top_k)
+    # Get top-k indices
+    logger.info(f"Finding top-{args.top_k} similar images...")
+    topk_idx, topk_sim = get_topk_indices(similarity, k=args.top_k)
     
     # Load labels
     logger.info(f"Loading labels from {args.metadata_path}")
@@ -291,15 +260,12 @@ def main(args):
     logger.info(f"Validation labels shape: {val_labels.shape}")
     
     # Compute predicted labels based on top-k retrieval
-    # Use voting: average the one-hot labels of top-k retrieved images
     logger.info("Computing predicted labels from top-k retrieval...")
     predicted_labels = np.zeros_like(test_labels, dtype=float)
     
     for i in range(len(test_patch_ids)):
         topk_indices = topk_idx[i].numpy()
-        topk_labels = val_labels[topk_indices]  # (k, num_classes)
-        
-        # Average voting (can also use majority voting)
+        topk_labels = val_labels[topk_indices]
         predicted_labels[i] = topk_labels.mean(axis=0)
         
     # Compute F1 scores
@@ -307,8 +273,9 @@ def main(args):
     metrics = compute_f1_score(test_labels, predicted_labels)
     
     logger.info("=" * 50)
-    logger.info("RESULTS")
+    logger.info("RANDOM BASELINE RESULTS")
     logger.info("=" * 50)
+    logger.info(f"Model: {args.model_name} (randomly initialized, seed={args.seed})")
     logger.info(f"Top-K: {args.top_k}")
     logger.info(f"F1 Score (Micro): {metrics['f1_micro']:.4f}")
     logger.info(f"F1 Score (Macro): {metrics['f1_macro']:.4f}")
@@ -331,7 +298,7 @@ def main(args):
             logger.info(f"  Labels: {query_labels_text}")
             logger.info(f"  Top-{args.top_k} retrieved:")
             
-            for j, idx in enumerate(topk_idx[i][:5].numpy()):  # Show top 5
+            for j, idx in enumerate(topk_idx[i][:5].numpy()):
                 retrieved_pid = val_patch_ids[idx]
                 retrieved_labels = patch_to_labels_text.get(retrieved_pid, [])
                 sim = topk_sim[i][j].item()
@@ -343,15 +310,15 @@ def main(args):
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='I-JEPA Testing')
+    parser = argparse.ArgumentParser(description='Random Baseline Testing')
     
     # Model
-    parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
     parser.add_argument('--model_name', type=str, default='vit_base',
                         choices=['vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'vit_huge', 'vit_giant'])
     parser.add_argument('--patch_size', type=int, default=16)
     parser.add_argument('--in_chans', type=int, default=3)
     parser.add_argument('--crop_size', type=int, default=224)
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for model initialization')
     
     # Data
     parser.add_argument('--data_root', type=str, required=True, help='Path to BigEarthNet-S2 folder')

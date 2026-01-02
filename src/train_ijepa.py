@@ -186,7 +186,7 @@ def train_one_epoch(
     target_encoder.eval()
     
     loss_meter = AverageMeter()
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    scaler = torch.amp.GradScaler('cpu') if use_amp else None  # Note: MPS doesn't support GradScaler yet
     
     for itr, (images, masks_enc, masks_pred) in enumerate(data_loader):
         # Move to device
@@ -196,7 +196,7 @@ def train_one_epoch(
         masks_pred = [m.to(device, non_blocking=True) for m in masks_pred]
         
         # Forward pass
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp and device.type != 'mps'):
             # Target representations (no gradient)
             with torch.no_grad():
                 h = target_encoder(images)
@@ -258,12 +258,15 @@ def main(args):
     """Main training function."""
     
     # Device setup
-    if torch.cuda.is_available():
+    if torch.backends.mps.is_available():
+        device = torch.device('mps')
+        logger.info("Using Apple MPS (Metal Performance Shaders)")
+    elif torch.cuda.is_available():
         device = torch.device('cuda')
         torch.cuda.set_device(0)
     else:
         device = torch.device('cpu')
-        logger.warning("CUDA not available, using CPU")
+        logger.warning("GPU not available, using CPU")
     
     logger.info(f"Using device: {device}")
     
