@@ -14,9 +14,10 @@ import wandb
 from encoder import build_encoder, get_num_patches
 from predictor import build_predictor_for_encoder
 from data_loading import load_data
-from masks import MultiBlockMaskCollator
-from transforms import make_transforms_rgb
+from masks import RandomMaskCollator
+from transforms import make_transforms_rgb, make_transforms
 from utils import apply_masks, repeat_interleave_batch
+
 
 # Logging setup
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
@@ -26,7 +27,27 @@ logger = logging.getLogger(__name__)
 _GLOBAL_SEED = 0
 np.random.seed(_GLOBAL_SEED)
 torch.manual_seed(_GLOBAL_SEED)
-torch.backends.cudnn.benchmark = True
+
+class SIGReg(torch.nn.Module):
+    def __init__(self, knots=17, device=None):
+        super().__init__()
+        t = torch.linspace(0, 3, knots, dtype=torch.float32)
+        dt = 3 / (knots - 1)
+        weights = torch.full((knots,), 2 * dt, dtype=torch.float32)
+        weights[[0, -1]] = dt
+        window = torch.exp(-t.square() / 2.0)
+        self.register_buffer("t", t)
+        self.register_buffer("phi", window)
+        self.register_buffer("weights", weights * window)
+        self.device = device
+
+    def forward(self, proj):
+        A = torch.randn(proj.size(-1), 256, device=self.device)
+        A = A.div_(A.norm(p=2, dim=0))
+        x_t = (proj @ A).unsqueeze(-1) * self.t
+        err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
+        statistic = (err @ self.weights) * proj.size(-2)
+        return statistic.mean()
 
 
 class AverageMeter:
@@ -52,7 +73,8 @@ def init_model(
     model_name='vit_base',
     patch_size=16,
     crop_size=224,
-    in_chans=3,
+    in_chans1=3,
+    in_chans2=3,
     pred_depth=6,
     pred_emb_dim=384,
 ):
@@ -73,36 +95,56 @@ def init_model(
         predictor: predictor network
     """
     # Build encoder
-    encoder, embed_dim = build_encoder(
+    encoder1, embed_dim1 = build_encoder(
         model_name=model_name,
         img_size=crop_size,
         patch_size=patch_size,
-        in_chans=in_chans,
+        in_chans=in_chans1,
     )
-    encoder = encoder.to(device)
+    encoder1 = encoder1.to(device)
+# B N E (1, 98, 784)
+    # Build encoder
+    encoder2, embed_dim2 = build_encoder(
+        model_name=model_name,
+        img_size=crop_size,
+        patch_size=patch_size,
+        in_chans=in_chans2,
+    )
+    encoder2 = encoder2.to(device)
     
     # Calculate number of patches
     num_patches = get_num_patches(crop_size, patch_size)
     
     # Build predictor
-    predictor = build_predictor_for_encoder(
-        encoder_name=model_name,
-        num_patches=num_patches,
-        embed_dim=embed_dim,
-        predictor_embed_dim=pred_emb_dim,
-        depth=pred_depth,
-    )
-    predictor = predictor.to(device)
+    # predictor = build_predictor_for_encoder(
+    #     encoder_name=model_name,
+    #     num_patches=num_patches,
+    #     embed_dim=embed_dim1 + embed_dim2,
+    #     predictor_embed_dim=pred_emb_dim,
+    #     depth=pred_depth,
+    # )
+    # predictor = predictor.to(device)
+    probe = nn.Sequential(
+        nn.Linear(embed_dim1 + embed_dim2, 2048),
+        nn.LayerNorm(2048),
+        nn.ReLU(inplace=True),
+        nn.Linear(2048, 2048),
+        nn.LayerNorm(2048),
+        nn.ReLU(inplace=True),
+        nn.Linear(2048, pred_emb_dim)
+    ).to(device)
     
-    logger.info(f"Encoder: {model_name}, embed_dim={embed_dim}, num_patches={num_patches}")
+    logger.info(f"Encoder1: {model_name}, embed_dim={embed_dim1}, num_patches={num_patches}")
+    logger.info(f"Encoder2: {model_name}, embed_dim={embed_dim2}, num_patches={num_patches}")
     logger.info(f"Predictor: depth={pred_depth}, embed_dim={pred_emb_dim}")
     
-    return encoder, predictor
+    return encoder1, encoder2, probe
 
 
 def init_optimizer(
-    encoder,
-    predictor,
+    encoder1,
+    encoder2,
+    probe,
     lr=1e-4,
     weight_decay=0.05,
     warmup_epochs=10,
@@ -113,7 +155,8 @@ def init_optimizer(
     Initialize optimizer and learning rate scheduler.
     
     Args:
-        encoder: context encoder
+        encoder1: first context encoder
+        encoder2: second context encoder
         predictor: predictor network
         lr: learning rate
         weight_decay: weight decay
@@ -127,8 +170,9 @@ def init_optimizer(
     """
     # Combine parameters
     param_groups = [
-        {'params': encoder.parameters()},
-        {'params': predictor.parameters()},
+        {'params': encoder1.parameters()},
+        {'params': encoder2.parameters()},
+        {'params': probe.parameters()},
     ]
     
     optimizer = torch.optim.AdamW(param_groups, lr=lr, weight_decay=weight_decay)
@@ -150,17 +194,20 @@ def init_optimizer(
 
 
 def train_one_epoch(
-    encoder,
-    predictor,
-    target_encoder,
-    data_loader,
+    device,
+    encoder1,
+    encoder2,
+    probe,
+    data_loader1,
+    data_loader2,
     optimizer,
     scheduler,
-    momentum_scheduler,
-    device,
     epoch,
     use_amp=False,
     log_freq=10,
+    lamb=0.5,
+    sigreg1=None,
+    sigreg2=None,
 ):
     """
     Train for one epoch.
@@ -181,41 +228,49 @@ def train_one_epoch(
     Returns:
         avg_loss: average loss for the epoch
     """
-    encoder.train()
-    predictor.train()
-    target_encoder.eval()
+    encoder1.train()
+    encoder2.train()
+    probe.train()
     
     loss_meter = AverageMeter()
     scaler = torch.amp.GradScaler('cpu') if use_amp else None  # Note: MPS doesn't support GradScaler yet
     
-    for itr, (images, masks_enc, masks_pred) in enumerate(data_loader):
+    for itr, ((images1, masks_enc1, masks_pred1), (images2, masks_enc2, masks_pred2)) in enumerate(zip(data_loader1, data_loader2)):
         # Move to device
-        images = images.to(device, non_blocking=True)
+        images1 = images1.to(device, non_blocking=True)
+        images2 = images2.to(device, non_blocking=True)
         
-        masks_enc = [m.to(device, non_blocking=True) for m in masks_enc]
-        masks_pred = [m.to(device, non_blocking=True) for m in masks_pred]
+        masks_enc1 = [m.to(device, non_blocking=True) for m in masks_enc1]
+        masks_pred1 = [m.to(device, non_blocking=True) for m in masks_pred1]
+        masks_enc2 = [m.to(device, non_blocking=True) for m in masks_enc2]
+        masks_pred2 = [m.to(device, non_blocking=True) for m in masks_pred2]
         
         # Forward pass
         with torch.amp.autocast(device_type=device.type, enabled=use_amp and device.type != 'mps'):
             # Target representations (no gradient)
-            with torch.no_grad():
-                h = target_encoder(images)
-                h = F.layer_norm(h, (h.size(-1),))
-                B = len(h)
-                # print("h shape:", h.shape)
-                # Extract target patches
-                h = apply_masks(h, masks_pred)
-                # h = repeat_interleave_batch(h, B, repeat=len(masks_enc))
+            z_target1 = encoder1(images1, masks_pred1)
+            z_target2 = encoder2(images2, masks_pred2)
             
             # Context representations
-            print(images.shape)
-            z = encoder(images, masks_enc)
-            print(z.shape)
-            z = predictor(z, masks_enc, masks_pred)
-            print(z.shape)
+            z_context1 = encoder1(images1, masks_enc1)
+            z_context2 = encoder2(images2, masks_enc2)
+            
+            
             
             # Loss (smooth L1)
-            loss = F.smooth_l1_loss(z, h)
+            emb1 = torch.stack([z_context1, z_target1], dim=0)
+            emb2 = torch.stack([z_context2, z_target2], dim=0)
+            
+            inv_loss = (emb1.mean(0) - emb1).square().mean() + (emb2.mean(0) - emb2).square().mean()
+            sigreg_loss = sigreg1(emb1) + sigreg2(emb2)
+            lejepa_loss = sigreg_loss * lamb + inv_loss * (1 - lamb)
+            
+            y = probe(torch.cat([z_context1, z_context2], dim=-1))
+            yhat = probe(torch.cat([z_target1, z_target2], dim=-1))
+
+            probe_loss = F.smooth_l1_loss(y, yhat)
+            # probe_loss = F.cross_entropy(yhat, y)
+            loss = lejepa_loss + probe_loss
         
         # Backward pass
         optimizer.zero_grad()
@@ -229,18 +284,12 @@ def train_one_epoch(
         
         scheduler.step()
         
-        # EMA update of target encoder
-        with torch.no_grad():
-            m = next(momentum_scheduler)
-            for param_q, param_k in zip(encoder.parameters(), target_encoder.parameters()):
-                param_k.data.mul_(m).add_((1. - m) * param_q.detach().data)
-        
         # Logging
         loss_meter.update(loss.item())
         
         if itr % log_freq == 0:
             logger.info(
-                f'Epoch [{epoch}][{itr}/{len(data_loader)}] '
+                f'Epoch [{epoch}][{itr}/{len(data_loader1)}] '
                 f'Loss: {loss_meter.avg:.4f} '
                 f'LR: {scheduler.get_last_lr()[0]:.6f}'
             )
@@ -250,7 +299,6 @@ def train_one_epoch(
                 'train/loss': loss_meter.val,
                 'train/loss_avg': loss_meter.avg,
                 'train/lr': scheduler.get_last_lr()[0],
-                'train/ema_momentum': m,
                 'epoch': epoch,
             })
     
@@ -282,76 +330,85 @@ def main(args):
     )
     
     # Initialize models
-    encoder, predictor = init_model(
+    encoder1, encoder2, probe = init_model(
         device=device,
         model_name=args.model_name,
         patch_size=args.patch_size,
         crop_size=args.crop_size,
-        in_chans=args.in_chans,
+        in_chans1=args.in_chans1,
+        in_chans2=args.in_chans2,
         pred_depth=args.pred_depth,
         pred_emb_dim=args.pred_emb_dim,
     )
     
-    # Create target encoder (EMA of encoder)
-    target_encoder = copy.deepcopy(encoder)
-    for p in target_encoder.parameters():
-        p.requires_grad = False
-    
     # Create mask collator
-    mask_collator = MultiBlockMaskCollator()
+    mask_collator1 = RandomMaskCollator()
+    mask_collator2 = RandomMaskCollator()
     
     # Create transforms
-    transform = make_transforms_rgb(num_channels=3)
+    transform1 = make_transforms(num_channels=2)
+    transform2 = make_transforms_rgb(num_channels=3)
     
     # Create data loader
-    data_loader = load_data(
-        root=args.data_root,
+    data_loader1 = load_data(
+        root=args.data_root1,
         split='train',
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        collate_fn=mask_collator,
+        collate_fn=mask_collator1,
         pin_memory=True,
         drop_last=True,
-        transform=transform,
+        transform=transform1,
     )
     
-    iterations_per_epoch = len(data_loader)
+    data_loader2 = load_data(
+        root=args.data_root2,
+        split='train',
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        collate_fn=mask_collator2,
+        pin_memory=True,
+        drop_last=True,
+        transform=transform2,
+    )
+
+    iterations_per_epoch = len(data_loader1)
     
     # Initialize optimizer and scheduler
     optimizer, scheduler = init_optimizer(
-        encoder=encoder,
-        predictor=predictor,
+        encoder1=encoder1,
+        encoder2=encoder2,
+        probe=probe,
         lr=args.lr,
         weight_decay=args.weight_decay,
         warmup_epochs=args.warmup_epochs,
         num_epochs=args.epochs,
         iterations_per_epoch=iterations_per_epoch,
     )
-    
-    # Momentum schedule for EMA
-    ema_start, ema_end = args.ema
-    total_iters = args.epochs * iterations_per_epoch
-    momentum_scheduler = (
-        ema_start + i * (ema_end - ema_start) / total_iters
-        for i in range(total_iters + 1)
-    )
+
+    sigreg1 = SIGReg(device=device).to(device)
+    sigreg2 = SIGReg(device=device).to(device)
     
     # Training loop
     logger.info("Starting training...")
     for epoch in range(1, args.epochs + 1):
         avg_loss = train_one_epoch(
-            encoder=encoder,
-            predictor=predictor,
-            target_encoder=target_encoder,
-            data_loader=data_loader,
+            device=device,
+            encoder1=encoder1,
+            encoder2=encoder2,
+            probe=probe,
+            data_loader1=data_loader1,
+            data_loader2=data_loader2,
             optimizer=optimizer,
             scheduler=scheduler,
-            momentum_scheduler=momentum_scheduler,
-            device=device,
             epoch=epoch,
             use_amp=args.use_amp,
             log_freq=args.log_freq,
+            lamb=args.lamb,
+            sigreg1=sigreg1,
+            sigreg2=sigreg2,
         )
         
         logger.info(f'Epoch {epoch} completed. Avg Loss: {avg_loss:.4f}')
@@ -366,9 +423,9 @@ def main(args):
         if epoch % args.save_freq == 0 or epoch == args.epochs:
             checkpoint = {
                 'epoch': epoch,
-                'encoder': encoder.state_dict(),
-                'predictor': predictor.state_dict(),
-                'target_encoder': target_encoder.state_dict(),
+                'encoder1': encoder1.state_dict(),
+                'encoder2': encoder2.state_dict(),
+                'probe': probe.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
                 'loss': avg_loss,
@@ -394,12 +451,14 @@ def parse_args():
     parser.add_argument('--model_name', type=str, default='vit_base',
                         choices=['vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'vit_huge', 'vit_giant'])
     parser.add_argument('--patch_size', type=int, default=16)
-    parser.add_argument('--in_chans', type=int, default=3)
+    parser.add_argument('--in_chans1', type=int, default=2)
+    parser.add_argument('--in_chans2', type=int, default=3)
     parser.add_argument('--pred_depth', type=int, default=6)
     parser.add_argument('--pred_emb_dim', type=int, default=384)
     
     # Data
-    parser.add_argument('--data_root', type=str, required=True)
+    parser.add_argument('--data_root1', type=str, default='data/BEN_14k/BigEarthNet-S1')
+    parser.add_argument('--data_root2', type=str, default='data/BEN_14k/BigEarthNet-S2')
     parser.add_argument('--crop_size', type=int, default=224)
     parser.add_argument('--crop_scale', type=float, nargs=2, default=[0.3, 1.0])
     parser.add_argument('--batch_size', type=int, default=64)
@@ -426,11 +485,12 @@ def parse_args():
     parser.add_argument('--warmup_epochs', type=int, default=10)
     parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0])
     parser.add_argument('--use_amp', action='store_true')
+    parser.add_argument('--lamb', type=float, default=0.02, help='Weight for SIGReg loss vs invariance loss')
     
     # Logging/Saving
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
-    parser.add_argument('--save_freq', type=int, default=50)
+    parser.add_argument('--save_freq', type=int, default=10)
     
     # Weights & Biases
     parser.add_argument('--wandb_enabled', action='store_true', help='Enable wandb logging')

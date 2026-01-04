@@ -41,7 +41,10 @@ class MultiChannelDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         mc_img_c_h_w = torch.from_numpy(tifffile.imread(os.path.join(self.data_path, self.metadata[idx]))).float()
-        mc_img_n_c_h_w_color = mc_img_c_h_w[[2, 1, 0], :, :]  # Convert BGR to RGB for visualization if needed
+        if mc_img_c_h_w.shape[0] == 10:
+            mc_img_n_c_h_w_color = mc_img_c_h_w[[2, 1, 0], :, :]  # Convert BGR to RGB for visualization if needed
+        else:
+            mc_img_n_c_h_w_color = mc_img_c_h_w
         mc_img_n_c_h_w_color = self.transform(mc_img_n_c_h_w_color) if self.transform else mc_img_n_c_h_w_color
         return mc_img_n_c_h_w_color
     

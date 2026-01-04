@@ -40,8 +40,8 @@ def download_dataset_from_kaggle(dataset_name, download_path):
 
 def main():
     # Define paths
-    dataset_root = os.path.join(os.getcwd(), 'data', 'BEN_14k')
-    download_path = os.path.join(os.getcwd(), 'data')
+    dataset_root = '/teamspace/studios/this_studio/JEPA/data/BEN_14k'
+    download_path = '/teamspace/studios/this_studio/JEPA/data'
     kaggle_dataset = "narendraaironi/bigearthnet-14k"
     
     # Check if dataset exists, if not download it
@@ -50,11 +50,11 @@ def main():
     else:
         print(f"Dataset already exists at {dataset_root}")
     
-    bigearthnet_s2_root = os.path.join(dataset_root, 'BigEarthNet-S2')
+    bigearthnet_s2_root = os.path.join(dataset_root, 'BigEarthNet-S1')
     train_ds = MultiChannelDataset(
         root=bigearthnet_s2_root,
         split='train',
-        transform=make_transforms_rgb(num_channels=3),
+        transform=make_transforms(num_channels=2),
     )
 
     print(f"Dataset length: {len(train_ds)}")

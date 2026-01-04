@@ -12,7 +12,7 @@ class DefaultCollator(object):
 class RandomMaskCollator(object):
     def __init__(
         self,
-        ratio=(0.4, 0.6),
+        ratio=0.5,
         input_size=(224, 224),
         patch_size=16,
     ):
@@ -40,7 +40,7 @@ class RandomMaskCollator(object):
         g = torch.Generator()
         g.manual_seed(seed)
         ratio = self.ratio
-        ratio = ratio[0] + torch.rand(1, generator=g).item() * (ratio[1] - ratio[0])
+        # ratio = ratio[0] + torch.rand(1, generator=g).item() * (ratio[1] - ratio[0])
         num_patches = self.height * self.width
         num_keep = int(num_patches * (1. - ratio))
 
@@ -61,7 +61,7 @@ class MultiBlockMaskCollator(object):
         self,
         input_size=(224, 224),
         patch_size=16,
-        enc_mask_scale=(0.2, 0.8),
+        enc_mask_scale=(0.85, 1),
         pred_mask_scale=(0.2, 0.8),
         aspect_ratio=(0.3, 3.0),
         nenc=1,
