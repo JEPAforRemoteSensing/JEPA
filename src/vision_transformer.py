@@ -165,6 +165,40 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x, attn
+    
+class CrossAttention(nn.Module):
+    """Multi-head cross-attention module."""
+    
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim ** -0.5
+
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x, context):
+        B, N, C = x.shape
+        # Q from x (query)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        q, _, _ = qkv[0], qkv[1], qkv[2]
+        
+        # K, V from context (keys and values)
+        B_ctx, N_ctx, C_ctx = context.shape
+        qkv_context = self.qkv(context).reshape(B_ctx, N_ctx, 3, self.num_heads, C_ctx // self.num_heads).permute(2, 0, 3, 1, 4)
+        _, k_context, v_context = qkv_context[0], qkv_context[1], qkv_context[2]
+
+        attn = (q @ k_context.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v_context).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x, attn
 
 
 class Block(nn.Module):
@@ -183,6 +217,28 @@ class Block(nn.Module):
 
     def forward(self, x, return_attention=False):
         y, attn = self.attn(self.norm1(x))
+        if return_attention:
+            return attn
+        x = x + self.drop_path(y)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+    
+class CrossBlock(nn.Module):
+    """Transformer block with cross-attention and MLP."""
+    
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = CrossAttention(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+    def forward(self, x, context, return_attention=False):
+        y, attn = self.attn(self.norm1(x), self.norm1(context))
         if return_attention:
             return attn
         x = x + self.drop_path(y)
@@ -467,6 +523,158 @@ class VisionTransformerPredictor(nn.Module):
         # Forward through predictor blocks
         for blk in self.predictor_blocks:
             x = blk(x)
+        x = self.predictor_norm(x)
+
+        # Return only predictions for mask tokens
+        x = x[:, N_ctxt:]
+        x = self.predictor_proj(x)
+
+        return x
+
+
+class SharedPredictor(nn.Module):
+    """
+    Vision Transformer Predictor for I-JEPA.
+    
+    Takes context encoder output and predicts target block representations.
+    Uses mask tokens with positional embeddings to specify which positions to predict.
+    """
+    
+    def __init__(
+        self,
+        num_patches,
+        embed_dim=768,
+        predictor_embed_dim=384,
+        depth=1,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.0,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        norm_layer=nn.LayerNorm,
+        init_std=0.02,
+        **kwargs
+    ):
+        super().__init__()
+        
+        # Project from encoder dimension to predictor dimension
+        self.predictor_embed = nn.Linear(embed_dim, predictor_embed_dim, bias=True)
+        
+        # Learnable mask token
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
+        
+        # Stochastic depth
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
+        
+        # Positional embedding for predictor (sinusoidal, frozen)
+        self.predictor_pos_embed = nn.Parameter(
+            torch.zeros(1, num_patches, predictor_embed_dim), requires_grad=False)
+        predictor_pos_embed = get_2d_sincos_pos_embed(
+            self.predictor_pos_embed.shape[-1],
+            int(num_patches ** 0.5),
+            cls_token=False)
+        self.predictor_pos_embed.data.copy_(torch.from_numpy(predictor_pos_embed).float().unsqueeze(0))
+        
+        # Predictor transformer blocks
+        self.predictor_self_blocks = nn.ModuleList([
+            Block(
+                dim=predictor_embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, 
+                qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)])
+        
+        self.predictor_cross_blocks = nn.ModuleList([
+            CrossBlock(
+                dim=predictor_embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, 
+                qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)])
+        
+        self.predictor_norm = norm_layer(predictor_embed_dim)
+        
+        # Project back to encoder dimension
+        self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        
+        # Weight initialization
+        self.init_std = init_std
+        trunc_normal_(self.mask_token, std=self.init_std)
+        self.apply(self._init_weights)
+        self.fix_init_weight()
+
+    def fix_init_weight(self):
+        """Rescale weights for better initialization."""
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
+
+        for layer_id, layer in enumerate(self.predictor_self_blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+        
+        for layer_id, layer in enumerate(self.predictor_cross_blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv2d):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, masks_ctx, masks_tgt, other_ctx):
+        """
+        Forward pass through the predictor.
+        
+        Args:
+            x: context encoder output of shape (B*nenc, N_ctx, D)
+            masks_x: list of context masks (encoder masks)
+            masks: list of target masks (prediction masks)
+            
+        Returns:
+            Predicted representations for target positions
+        """
+        assert (masks_tgt is not None) and (other_ctx is not None), 'Cannot run predictor without mask indices'
+
+        # Batch size (accounting for multiple encoder masks)
+        B = len(x) // len(masks_ctx)
+
+        # Map from encoder-dim to predictor-dim
+        x = self.predictor_embed(x)
+
+        # Add positional embedding to context tokens
+        x_pos_embed = self.predictor_pos_embed.repeat(B, 1, 1)
+        x += apply_masks(x_pos_embed, masks_ctx)
+
+        _, N_ctxt, D = x.shape
+
+        # Create mask tokens with positional embeddings for target positions
+        pos_embs = self.predictor_pos_embed.repeat(B, 1, 1)
+        pos_embs = apply_masks(pos_embs, masks_tgt)
+        # pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
+        
+        # Initialize prediction tokens
+        pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
+        pred_tokens += pos_embs
+        
+        # Concatenate context tokens with prediction tokens
+        x = x.repeat(len(masks_tgt), 1, 1)
+        x = torch.cat([x, pred_tokens], dim=1)
+
+        # Forward through predictor blocks
+        for blk in self.predictor_self_blocks:
+            x = blk(x)
+        x = self.predictor_norm(x)
+
+        for blk in self.predictor_cross_blocks:
+            x = blk(x, other_ctx)
         x = self.predictor_norm(x)
 
         # Return only predictions for mask tokens
