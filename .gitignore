@@ -1,3 +1,4 @@
 data/
 checkpoints/
 wandb/
+src/.DS_Store

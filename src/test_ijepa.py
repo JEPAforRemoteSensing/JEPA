@@ -172,35 +172,75 @@ def load_labels(metadata_path, patch_ids):
     return np.stack(labels)
 
 
-def compute_f1_score(query_labels, predicted_labels, average='micro'):
+def compute_retrieval_metrics(query_labels, gallery_labels, topk_indices):
     """
-    Compute F1 score for multi-label classification.
+    Compute retrieval precision and recall based on label overlap.
     
-    For each query, the predicted label is the union (or majority vote) of top-k retrieved labels.
+    Precision = (1/|X^final|) * sum_r (|L_q ∩ L_r| / |L_r|)
+    Recall = (1/|X^final|) * sum_r (|L_q ∩ L_r| / |L_q|)
+    
+    Where:
+        - X^final is the set of top-k retrieved items
+        - L_q is the label set of the query
+        - L_r is the label set of retrieved item r
     
     Args:
-        query_labels: (N, num_classes) one-hot ground truth
-        predicted_labels: (N, num_classes) predicted probabilities or votes
-        average: 'micro', 'macro', or 'samples'
+        query_labels: (N, num_classes) one-hot ground truth labels for queries
+        gallery_labels: (M, num_classes) one-hot labels for gallery/validation set
+        topk_indices: (N, k) indices of top-k retrieved items for each query
+    
+    Returns:
+        Dictionary with precision, recall, and F1 scores
     """
-    from sklearn.metrics import f1_score, precision_score, recall_score
+    num_queries = query_labels.shape[0]
+    k = topk_indices.shape[1]
     
-    # Convert to binary predictions (threshold at 0.5 for votes)
-    pred_binary = (predicted_labels >= 0.5).astype(int)
+    total_precision = 0.0
+    total_recall = 0.0
     
-    f1_micro = f1_score(query_labels, pred_binary, average='micro', zero_division=0)
-    f1_macro = f1_score(query_labels, pred_binary, average='macro', zero_division=0)
-    f1_samples = f1_score(query_labels, pred_binary, average='samples', zero_division=0)
+    for i in range(num_queries):
+        L_q = query_labels[i]  # Query label set (one-hot)
+        query_precision = 0.0
+        query_recall = 0.0
+        
+        for j in range(k):
+            retrieved_idx = topk_indices[i, j]
+            L_r = gallery_labels[retrieved_idx]  # Retrieved item label set
+            
+            # Compute intersection: |L_q ∩ L_r|
+            intersection = np.sum(np.logical_and(L_q, L_r))
+            
+            # |L_r| - number of labels in retrieved item
+            L_r_size = np.sum(L_r)
+            # |L_q| - number of labels in query
+            L_q_size = np.sum(L_q)
+            
+            # Precision contribution: |L_q ∩ L_r| / |L_r|
+            if L_r_size > 0:
+                query_precision += intersection / L_r_size
+            
+            # Recall contribution: |L_q ∩ L_r| / |L_q|
+            if L_q_size > 0:
+                query_recall += intersection / L_q_size
+        
+        # Average over k retrieved items
+        total_precision += query_precision / k
+        total_recall += query_recall / k
     
-    precision_micro = precision_score(query_labels, pred_binary, average='micro', zero_division=0)
-    recall_micro = recall_score(query_labels, pred_binary, average='micro', zero_division=0)
+    # Average over all queries
+    avg_precision = total_precision / num_queries
+    avg_recall = total_recall / num_queries
+    
+    # F1 score
+    if avg_precision + avg_recall > 0:
+        f1 = 2 * avg_precision * avg_recall / (avg_precision + avg_recall)
+    else:
+        f1 = 0.0
     
     return {
-        'f1_micro': f1_micro,
-        'f1_macro': f1_macro,
-        'f1_samples': f1_samples,
-        'precision_micro': precision_micro,
-        'recall_micro': recall_micro,
+        'precision': avg_precision,
+        'recall': avg_recall,
+        'f1': f1,
     }
 
 
@@ -290,31 +330,17 @@ def main(args):
     logger.info(f"Test labels shape: {test_labels.shape}")
     logger.info(f"Validation labels shape: {val_labels.shape}")
     
-    # Compute predicted labels based on top-k retrieval
-    # Use voting: average the one-hot labels of top-k retrieved images
-    logger.info("Computing predicted labels from top-k retrieval...")
-    predicted_labels = np.zeros_like(test_labels, dtype=float)
-    
-    for i in range(len(test_patch_ids)):
-        topk_indices = topk_idx[i].numpy()
-        topk_labels = val_labels[topk_indices]  # (k, num_classes)
-        
-        # Average voting (can also use majority voting)
-        predicted_labels[i] = topk_labels.mean(axis=0)
-        
-    # Compute F1 scores
-    logger.info("Computing F1 scores...")
-    metrics = compute_f1_score(test_labels, predicted_labels)
-    
+    # Compute retrieval metrics based on label overlap
+    logger.info("Computing retrieval metrics...")
+    metrics = compute_retrieval_metrics(test_labels, val_labels, topk_idx.numpy())
+
     logger.info("=" * 50)
     logger.info("RESULTS")
     logger.info("=" * 50)
     logger.info(f"Top-K: {args.top_k}")
-    logger.info(f"F1 Score (Micro): {metrics['f1_micro']:.4f}")
-    logger.info(f"F1 Score (Macro): {metrics['f1_macro']:.4f}")
-    logger.info(f"F1 Score (Samples): {metrics['f1_samples']:.4f}")
-    logger.info(f"Precision (Micro): {metrics['precision_micro']:.4f}")
-    logger.info(f"Recall (Micro): {metrics['recall_micro']:.4f}")
+    logger.info(f"Precision: {metrics['precision']:.4f}")
+    logger.info(f"Recall: {metrics['recall']:.4f}")
+    logger.info(f"F1 Score: {metrics['f1']:.4f}")
     logger.info("=" * 50)
     
     # Print some examples

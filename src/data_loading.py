@@ -56,7 +56,7 @@ class MultiChannelDataset(torch.utils.data.Dataset):
         img = sample.read()[[2, 1, 0], :, :]
         show(img, adjust='linear')
         
-
+# class SADIDataset(Mult)
 
 
 """

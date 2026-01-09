@@ -1,0 +1,19 @@
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+torch>=1.9.0
+torchvision>=0.10.0
+
+# Data handling and visualization
+tifffile>=2021.7.0
+rasterio>=1.2.0
+matplotlib>=3.3.0
+
+# Utilities
+tqdm>=4.62.0
+wandb>=0.12.0
+
+# Development (optional - uncomment if needed)
+# pytest>=6.2.0
+# black>=21.0
+# flake8>=3.9.0
