@@ -229,6 +229,8 @@ def train_one_epoch(
     probe.train()
     
     loss_meter = AverageMeter()
+    probe_loss_meter = AverageMeter()
+    lejepa_loss_meter = AverageMeter()
     scaler = torch.amp.GradScaler('cpu') if use_amp else None  # Note: MPS doesn't support GradScaler yet
     
     for itr, ((images1, masks_enc1, masks_pred1), (images2, masks_enc2, masks_pred2)) in enumerate(zip(data_loader1, data_loader2)):
@@ -284,6 +286,8 @@ def train_one_epoch(
         
         # Logging
         loss_meter.update(loss.item())
+        probe_loss_meter.update(probe_loss.item())
+        lejepa_loss_meter.update(lejepa_loss.item())
         
         if itr % log_freq == 0:
             logger.info(
@@ -295,6 +299,8 @@ def train_one_epoch(
             # Log to wandb
             wandb.log({
                 'train/loss': loss_meter.val,
+                'train/probe_loss': probe_loss_meter.val,
+                'train/lejepa_loss': lejepa_loss_meter.val,
                 'train/loss_avg': loss_meter.avg,
                 'train/lr': scheduler.get_last_lr()[0],
                 'epoch': epoch,
@@ -449,8 +455,8 @@ def parse_args():
     parser.add_argument('--patch_size', type=int, default=16)
     parser.add_argument('--in_chans1', type=int, default=2)
     parser.add_argument('--in_chans2', type=int, default=3)
-    parser.add_argument('--pred_depth', type=int, default=6)
-    parser.add_argument('--pred_emb_dim', type=int, default=384)
+    parser.add_argument('--pred_depth', type=int, default=1)
+    parser.add_argument('--pred_emb_dim', type=int, default=768)
     
     # Data
     parser.add_argument('--data_root1', type=str, default='data/BEN_14k/BigEarthNet-S1')

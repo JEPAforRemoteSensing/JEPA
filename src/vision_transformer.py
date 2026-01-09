@@ -238,7 +238,7 @@ class CrossBlock(nn.Module):
         self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x, context, return_attention=False):
-        y, attn = self.attn(self.norm1(x), self.norm1(context))
+        y, attn = self.attn(self.norm1(x), context)
         if return_attention:
             return attn
         x = x + self.drop_path(y)
@@ -544,7 +544,7 @@ class SharedPredictor(nn.Module):
         self,
         num_patches,
         embed_dim=768,
-        predictor_embed_dim=384,
+        predictor_embed_dim=768,
         depth=1,
         num_heads=12,
         mlp_ratio=4.0,
