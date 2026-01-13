@@ -62,8 +62,12 @@ class EmbeddingDataset(torch.utils.data.Dataset):
 
 
 def load_models(checkpoint_path, device, model_name='vit_base', patch_size=16, crop_size=224, in_chans1=2, in_chans2=3):
-    """Load both encoders from checkpoint."""
+    """Load both encoders from checkpoint or return None for random baseline."""
     
+    if checkpoint_path.lower() == 'random':
+        logger.info("Using random baseline - no models loaded")
+        return None, None
+
     encoder1, embed_dim1 = build_encoder(
         model_name=model_name,
         img_size=crop_size,
@@ -312,11 +316,24 @@ def run_evaluation_with_embeddings(args, mode, data_dict):
     
     logger.info(f"\n--- Evaluating mode: {mode} ---")
     
-    # Build KNN index
-    knn = build_knn_index(gallery_data['embeddings'], k=args.top_k, metric='cosine')
-    
-    # Get top-k indices
-    topk_idx, topk_sim = get_topk_indices_knn(knn, query_data['embeddings'], k=args.top_k)
+    if query_data['embeddings'] is None:
+        # Random retrieval baseline
+        num_queries = len(query_data['patch_ids'])
+        num_gallery = len(gallery_data['patch_ids'])
+        logger.info(f"Generating random retrieval for {num_queries} queries from {num_gallery} items")
+        
+        # Generate random indices for each query
+        topk_idx = []
+        for _ in range(num_queries):
+            topk_idx.append(torch.randperm(num_gallery)[:args.top_k])
+        topk_idx = torch.stack(topk_idx)
+        topk_sim = torch.zeros_like(topk_idx).float()
+    else:
+        # Build KNN index
+        knn = build_knn_index(gallery_data['embeddings'], k=args.top_k, metric='cosine')
+        
+        # Get top-k indices
+        topk_idx, topk_sim = get_topk_indices_knn(knn, query_data['embeddings'], k=args.top_k)
     
     # Compute metrics
     metrics = compute_retrieval_metrics(
@@ -378,16 +395,31 @@ def main(args):
     
     for mod in needed_modalities:
         data_dict[mod] = {}
-        encoder = encoders[0] if mod == 's1' else encoders[1]
+        encoder = None
+        if encoders is not None:
+            encoder = encoders[0] if mod == 's1' else encoders[1]
+        
         root = args.data_root_s1 if mod == 's1' else args.data_root_s2
         transform = transform_s1 if mod == 's1' else transform_s2
         
         for split in ['test', 'validation']:
-            logger.info(f"Extracting {mod.upper()} {split} embeddings...")
-            ds = EmbeddingDataset(root=root, split=split, transform=transform, modality=mod)
-            loader = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
-            
-            emb, pids, paths = extract_embeddings(encoder, loader, device)
+            if encoder is not None:
+                logger.info(f"Extracting {mod.upper()} {split} embeddings...")
+                ds = EmbeddingDataset(root=root, split=split, transform=transform, modality=mod)
+                loader = torch.utils.data.DataLoader(ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+                
+                emb, pids, paths = extract_embeddings(encoder, loader, device)
+            else:
+                logger.info(f"Collecting {mod.upper()} {split} metadata (random baseline)...")
+                pids = []
+                paths = []
+                data_path = os.path.join(root, split)
+                for img_file in os.scandir(data_path):
+                    if img_file.name.endswith('.tif'):
+                        pids.append(img_file.name.replace('.tif', ''))
+                        paths.append(img_file.path)
+                emb = None
+
             labels = load_labels(args.metadata_path, pids, modality=mod)
             
             # Map pids to text labels for display

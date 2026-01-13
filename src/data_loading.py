@@ -13,17 +13,29 @@ def load_data(
     collate_fn,
     pin_memory=True,
     drop_last=True,
-    transform=None
+    transform=None,
+    persistent_workers=False,
+    prefetch_factor=None,
 ):
     dataset = MultiChannelDataset(root, split, transform=transform)
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=collate_fn,
-        pin_memory=pin_memory,
-        drop_last=drop_last)
+    
+    # Build dataloader kwargs
+    loader_kwargs = {
+        'batch_size': batch_size,
+        'shuffle': shuffle,
+        'num_workers': num_workers,
+        'collate_fn': collate_fn,
+        'pin_memory': pin_memory,
+        'drop_last': drop_last,
+    }
+    
+    # Add optional optimizations
+    if num_workers > 0 and persistent_workers:
+        loader_kwargs['persistent_workers'] = True
+    if num_workers > 0 and prefetch_factor is not None:
+        loader_kwargs['prefetch_factor'] = prefetch_factor
+    
+    data_loader = torch.utils.data.DataLoader(dataset, **loader_kwargs)
     
     return data_loader
 

@@ -669,13 +669,14 @@ class SharedPredictor(nn.Module):
         x = torch.cat([x, pred_tokens], dim=1)
 
         # Forward through predictor blocks
-        for blk in self.predictor_self_blocks:
-            x = blk(x)
+        for self_blk, cross_blk in zip(self.predictor_self_blocks, self.predictor_cross_blocks):
+            x = self_blk(x)
+            x = cross_blk(x, other_ctx)
         x = self.predictor_norm(x)
 
-        for blk in self.predictor_cross_blocks:
-            x = blk(x, other_ctx)
-        x = self.predictor_norm(x)
+        # for blk in self.predictor_cross_blocks:
+        #     x = blk(x, other_ctx)
+        # x = self.predictor_norm(x)
 
         # Return only predictions for mask tokens
         x = x[:, N_ctxt:]
