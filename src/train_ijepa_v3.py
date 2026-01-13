@@ -179,6 +179,49 @@ def init_model(
     return encoder1, encoder2, probe
 
 
+def load_checkpoint(checkpoint_path, encoder1, encoder2, probe, optimizer=None, scheduler=None, device='cpu'):
+    """
+    Load a training checkpoint.
+    
+    Args:
+        checkpoint_path: path to the checkpoint file
+        encoder1: first encoder model
+        encoder2: second encoder model
+        probe: predictor model
+        optimizer: optimizer (optional)
+        scheduler: learning rate scheduler (optional)
+        device: device to load the checkpoint to
+        
+    Returns:
+        start_epoch: epoch to resume from
+    """
+    logger.info(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Load model states
+    encoder1.load_state_dict(checkpoint['encoder1'])
+    encoder2.load_state_dict(checkpoint['encoder2'])
+    probe.load_state_dict(checkpoint['probe'])
+    logger.info("Loaded model weights")
+    
+    # Load optimizer state if provided
+    if optimizer is not None and 'optimizer' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        logger.info("Loaded optimizer state")
+    
+    # Load scheduler state if provided
+    if scheduler is not None and 'scheduler' in checkpoint:
+        scheduler.load_state_dict(checkpoint['scheduler'])
+        logger.info("Loaded scheduler state")
+    
+    start_epoch = checkpoint.get('epoch', 0) + 1
+    loss = checkpoint.get('loss', None)
+    
+    logger.info(f"Resuming from epoch {start_epoch}, previous loss: {loss}")
+    
+    return start_epoch
+
+
 def init_optimizer(
     encoder1,
     encoder2,
@@ -490,10 +533,23 @@ def main(args):
 
     sigreg = SIGReg(device=device).to(device)
     
+    # Load checkpoint if resuming
+    start_epoch = 1
+    if args.resume is not None:
+        start_epoch = load_checkpoint(
+            checkpoint_path=args.resume,
+            encoder1=encoder1,
+            encoder2=encoder2,
+            probe=probe,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+        )
+    
     # Training loop
     logger.info("Starting training...")
     logger.info(f"Effective batch size: {args.batch_size * args.accumulation_steps}")
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         avg_loss = train_one_epoch(
             device=device,
             encoder1=encoder1,
@@ -595,6 +651,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
     parser.add_argument('--save_freq', type=int, default=10)
+    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
     
     # Weights & Biases
     parser.add_argument('--wandb_enabled', action='store_true', help='Enable wandb logging')
