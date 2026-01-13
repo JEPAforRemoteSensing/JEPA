@@ -275,6 +275,7 @@ def train_one_epoch(
     loss_meter = AverageMeter()
     probe_loss_meter = AverageMeter()
     lejepa_loss_meter = AverageMeter()
+    inv_loss_meter = AverageMeter()
     scaler = torch.amp.GradScaler('cuda') if (use_amp and device.type == 'cuda') else None
     
     # Timing metrics
@@ -357,6 +358,7 @@ def train_one_epoch(
         loss_meter.update(loss.item() * accumulation_steps)
         probe_loss_meter.update(probe_loss.item())
         lejepa_loss_meter.update(lejepa_loss.item())
+        inv_loss_meter.update(inv_loss.item())
         
         if itr % log_freq == 0:
             logger.info(
@@ -372,6 +374,7 @@ def train_one_epoch(
                 'train/loss': loss_meter.val,
                 'train/probe_loss': probe_loss_meter.val,
                 'train/lejepa_loss': lejepa_loss_meter.val,
+                'train/inv_loss': inv_loss_meter.val,
                 'train/loss_avg': loss_meter.avg,
                 'train/lr': scheduler.get_last_lr()[0],
                 'timing/data_time_ms': data_time.avg * 1000,

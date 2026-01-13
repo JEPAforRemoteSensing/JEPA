@@ -89,40 +89,51 @@ class EmbeddingDatasetS2(torch.utils.data.Dataset):
 
 
 class PairedEmbeddingDataset(torch.utils.data.Dataset):
-    """Dataset for extracting paired S1+S2 embeddings (same patch_id in both modalities)."""
+    """Dataset for extracting paired S1+S2 embeddings using metadata to link patches."""
     
-    def __init__(self, root_s1, root_s2, split, transform_s1=None, transform_s2=None):
+    def __init__(self, root_s1, root_s2, split, metadata_path, transform_s1=None, transform_s2=None):
         self.data_path_s1 = os.path.join(root_s1, split)
         self.data_path_s2 = os.path.join(root_s2, split)
         self.transform_s1 = transform_s1
         self.transform_s2 = transform_s2
         
-        # Find common patch_ids between S1 and S2
+        # Load metadata to get s1_name <-> patch_id mapping
+        df = pd.read_parquet(metadata_path)
+        
+        # Get available files in each directory
         s1_files = {f.name.replace('.tif', '') for f in os.scandir(self.data_path_s1) if f.name.endswith('.tif')}
         s2_files = {f.name.replace('.tif', '') for f in os.scandir(self.data_path_s2) if f.name.endswith('.tif')}
         
-        self.common_ids = sorted(list(s1_files & s2_files))
-        logger.info(f"Found {len(self.common_ids)} common patch_ids in {split} split")
+        # Find pairs that exist in both directories using metadata
+        self.pairs = []  # List of (s1_name, s2_name/patch_id)
+        for _, row in df.iterrows():
+            s1_name = row['s1_name']
+            s2_name = row['patch_id']  # S2 files use patch_id format
+            
+            if s1_name in s1_files and s2_name in s2_files:
+                self.pairs.append((s1_name, s2_name))
+        
+        logger.info(f"Found {len(self.pairs)} paired S1+S2 patches in {split} split")
     
     def __getitem__(self, idx):
-        patch_id = self.common_ids[idx]
-        filename = f"{patch_id}.tif"
+        s1_name, s2_name = self.pairs[idx]
         
         # Load S1
-        img_s1 = torch.from_numpy(tifffile.imread(os.path.join(self.data_path_s1, filename))).float()
+        img_s1 = torch.from_numpy(tifffile.imread(os.path.join(self.data_path_s1, f"{s1_name}.tif"))).float()
         if self.transform_s1:
             img_s1 = self.transform_s1(img_s1)
         
         # Load S2
-        img_s2 = torch.from_numpy(tifffile.imread(os.path.join(self.data_path_s2, filename))).float()
+        img_s2 = torch.from_numpy(tifffile.imread(os.path.join(self.data_path_s2, f"{s2_name}.tif"))).float()
         img_s2 = img_s2[[2, 1, 0], :, :]  # BGR to RGB
         if self.transform_s2:
             img_s2 = self.transform_s2(img_s2)
         
-        return img_s1, img_s2, patch_id
+        # Return s1_name for label lookup (since we pass modality='s1' to load_labels)
+        return img_s1, img_s2, s1_name
     
     def __len__(self):
-        return len(self.common_ids)
+        return len(self.pairs)
 
 
 def load_model_v2(checkpoint_path, device, model_name='vit_base', patch_size=16, crop_size=224, 
@@ -271,24 +282,72 @@ def get_topk_indices_knn(knn, query_embeddings, k=10):
     return torch.from_numpy(indices), torch.from_numpy(similarities)
 
 
-def load_labels(metadata_path, patch_ids):
-    """Load one-hot labels from metadata parquet file."""
+def load_labels(metadata_path, patch_ids, modality='s2'):
+    """Load one-hot labels from metadata parquet file.
+    
+    Args:
+        metadata_path: Path to metadata parquet file
+        patch_ids: List of patch IDs (filenames without .tif)
+        modality: 's1' or 's2' to specify which name column to use for lookup
+    """
     
     df = pd.read_parquet(metadata_path)
     
-    # Create mapping from patch_id to one_hot_labels
+    # Check if one_hot_labels column exists, if not create from labels
+    if 'one_hot_labels' not in df.columns:
+        # Get unique labels to create encoding
+        all_labels = set()
+        for labels_list in df['labels']:
+            all_labels.update(labels_list)
+        all_labels = sorted(list(all_labels))
+        num_classes = len(all_labels)
+        label_to_idx = {label: idx for idx, label in enumerate(all_labels)}
+        
+        def encode_labels(labels_list):
+            one_hot = np.zeros(num_classes)
+            for label in labels_list:
+                one_hot[label_to_idx[label]] = 1
+            return one_hot
+        
+        df['one_hot_labels'] = df['labels'].apply(encode_labels)
+        logger.info(f"Created one_hot_labels with {num_classes} classes")
+    
+    # Create mapping based on modality
+    # s1_name column for S1 data, patch_id for S2 data
     patch_to_labels = {}
+    
+    if modality == 's1':
+        name_col = 's1_name'
+    else:
+        # S2 filenames match patch_id format
+        name_col = 'patch_id'
+    
     for _, row in df.iterrows():
-        patch_to_labels[row['patch_id']] = np.array(row['one_hot_labels'])
+        if name_col in row and pd.notna(row[name_col]):
+            patch_to_labels[row[name_col]] = np.array(row['one_hot_labels'])
+        # Also add by s2v1_name as additional lookup option
+        if 's2v1_name' in row and pd.notna(row['s2v1_name']):
+            patch_to_labels[row['s2v1_name']] = np.array(row['one_hot_labels'])
     
     # Get labels for requested patch_ids
     labels = []
+    missing_count = 0
+    num_classes = len(df['one_hot_labels'].iloc[0])
+    
     for pid in patch_ids:
         if pid in patch_to_labels:
             labels.append(patch_to_labels[pid])
         else:
-            logger.warning(f"Patch {pid} not found in metadata")
-            labels.append(np.zeros(19))  # 19 classes
+            missing_count += 1
+            if missing_count <= 3:  # Only show first 3 warnings
+                logger.warning(f"Patch {pid} not found in metadata")
+            labels.append(np.zeros(num_classes))
+    
+    if missing_count > 3:
+        logger.warning(f"... and {missing_count - 3} more patches not found")
+    
+    if missing_count > 0:
+        logger.warning(f"Total {missing_count}/{len(patch_ids)} patches not found in metadata")
     
     return np.stack(labels)
 
@@ -357,8 +416,9 @@ def run_unimodal_test(args, encoder, data_root, transform, device, modality_name
     topk_idx, topk_sim = get_topk_indices_knn(knn, test_embeddings, k=args.top_k)
     
     # Load labels and compute predictions
-    test_labels = load_labels(args.metadata_path, test_patch_ids)
-    val_labels = load_labels(args.metadata_path, val_patch_ids)
+    modality_key = 's1' if modality_name == 'S1' else 's2'
+    test_labels = load_labels(args.metadata_path, test_patch_ids, modality=modality_key)
+    val_labels = load_labels(args.metadata_path, val_patch_ids, modality=modality_key)
     
     predicted_labels = np.zeros_like(test_labels, dtype=float)
     for i in range(len(test_patch_ids)):
@@ -428,8 +488,10 @@ def run_cross_modal_test(args, encoder_query, encoder_gallery,
     topk_idx, topk_sim = get_topk_indices_knn(knn, test_embeddings, k=args.top_k)
     
     # Load labels and compute predictions
-    test_labels = load_labels(args.metadata_path, test_patch_ids)
-    val_labels = load_labels(args.metadata_path, val_patch_ids)
+    query_modality_key = 's1' if query_modality == 'S1' else 's2'
+    gallery_modality_key = 's1' if gallery_modality == 'S1' else 's2'
+    test_labels = load_labels(args.metadata_path, test_patch_ids, modality=query_modality_key)
+    val_labels = load_labels(args.metadata_path, val_patch_ids, modality=gallery_modality_key)
     
     predicted_labels = np.zeros_like(test_labels, dtype=float)
     for i in range(len(test_patch_ids)):
@@ -465,11 +527,13 @@ def run_fused_test(args, encoder1, encoder2, probe, device, use_probe=False):
     # Create paired datasets
     test_dataset = PairedEmbeddingDataset(
         root_s1=args.data_root_s1, root_s2=args.data_root_s2,
-        split='test', transform_s1=transform_s1, transform_s2=transform_s2,
+        split='test', metadata_path=args.metadata_path,
+        transform_s1=transform_s1, transform_s2=transform_s2,
     )
     val_dataset = PairedEmbeddingDataset(
         root_s1=args.data_root_s1, root_s2=args.data_root_s2,
-        split='validation', transform_s1=transform_s1, transform_s2=transform_s2,
+        split='validation', metadata_path=args.metadata_path,
+        transform_s1=transform_s1, transform_s2=transform_s2,
     )
     
     logger.info(f"Test dataset: {len(test_dataset)} paired images")
@@ -500,9 +564,9 @@ def run_fused_test(args, encoder1, encoder2, probe, device, use_probe=False):
     knn = build_knn_index(val_embeddings, k=args.top_k, metric='cosine')
     topk_idx, topk_sim = get_topk_indices_knn(knn, test_embeddings, k=args.top_k)
     
-    # Load labels and compute predictions
-    test_labels = load_labels(args.metadata_path, test_patch_ids)
-    val_labels = load_labels(args.metadata_path, val_patch_ids)
+    # Load labels and compute predictions (use s1 since patch_ids come from s1 filenames in paired dataset)
+    test_labels = load_labels(args.metadata_path, test_patch_ids, modality='s1')
+    val_labels = load_labels(args.metadata_path, val_patch_ids, modality='s1')
     
     predicted_labels = np.zeros_like(test_labels, dtype=float)
     for i in range(len(test_patch_ids)):
@@ -636,7 +700,8 @@ def parse_args():
                         help='Path to BigEarthNet-S1 folder')
     parser.add_argument('--data_root_s2', type=str, default='data/BEN_14k/BigEarthNet-S2',
                         help='Path to BigEarthNet-S2 folder')
-    parser.add_argument('--metadata_path', type=str, required=True, help='Path to serbia_metadata.parquet')
+    parser.add_argument('--metadata_path', type=str, default='data/BEN_14k/metadata.parquet',
+                        help='Path to metadata.parquet with s1_name and patch_id columns')
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4)
     
