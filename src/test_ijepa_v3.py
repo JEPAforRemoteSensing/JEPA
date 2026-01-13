@@ -84,10 +84,35 @@ def load_models(checkpoint_path, device, model_name='vit_base', patch_size=16, c
     
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
+    def _clean_state_dict(sd: dict):
+        """Remove common wrapper prefixes from state_dict keys."""
+        new_sd = {}
+        for k, v in sd.items():
+            new_k = k
+            # Remove common wrappers like 'module.' or custom wrappers like '_orig_mod.'
+            if new_k.startswith('module.'):
+                new_k = new_k[len('module.'):]
+            # Remove occurrences of the custom prefix anywhere in the key
+            new_k = new_k.replace('_orig_mod.', '')
+            new_k = new_k.replace('module.', '')
+            new_sd[new_k] = v
+        return new_sd
+
     if 'encoder1' in checkpoint and 'encoder2' in checkpoint:
-        encoder1.load_state_dict(checkpoint['encoder1'])
-        encoder2.load_state_dict(checkpoint['encoder2'])
-        logger.info("Loaded encoder1 and encoder2 from checkpoint")
+        sd1 = checkpoint['encoder1']
+        sd2 = checkpoint['encoder2']
+
+        # If keys are wrapped (e.g. starting with '_orig_mod.'), clean them
+        if any(k.startswith('_orig_mod.') or k.startswith('module.') for k in sd1.keys()):
+            sd1 = _clean_state_dict(sd1)
+
+        if any(k.startswith('_orig_mod.') or k.startswith('module.') for k in sd2.keys()):
+            sd2 = _clean_state_dict(sd2)
+
+        # Load with the cleaned state dicts
+        encoder1.load_state_dict(sd1)
+        encoder2.load_state_dict(sd2)
+        logger.info("Loaded encoder1 and encoder2 from checkpoint (cleaned keys if needed)")
     else:
         raise ValueError("encoder1 and encoder2 not found in checkpoint")
     

@@ -244,6 +244,7 @@ def train_one_epoch(
     use_amp=False,
     log_freq=10,
     lamb=0.5,
+    gamma=1.0,
     sigreg=None,
     accumulation_steps=1,
     batch_size=64,
@@ -320,13 +321,14 @@ def train_one_epoch(
             
             sigreg_loss = sigreg(encoder_emb)
             lejepa_loss = sigreg_loss * lamb
+            inv_loss = F.smooth_l1_loss(z_context1, z_context2) * gamma
             
             # Prediction
             y_1_2 = probe(z_context1, masks_enc1, masks_pred2, z_context2)
             y_2_1 = probe(z_context2, masks_enc2, masks_pred1, z_context1)
 
             probe_loss = F.smooth_l1_loss(y_1_2, z_target2) + F.smooth_l1_loss(y_2_1, z_target1)
-            loss = (lejepa_loss + probe_loss) / accumulation_steps  # Scale for gradient accumulation
+            loss = (lejepa_loss + probe_loss + inv_loss) / accumulation_steps  # Scale for gradient accumulation
         
         forward_time.update(time.time() - forward_start)
         backward_start = time.time()
@@ -502,6 +504,7 @@ def main(args):
             use_amp=args.use_amp,
             log_freq=args.log_freq,
             lamb=args.lamb,
+            gamma=args.gamma,
             sigreg=sigreg,
             accumulation_steps=args.accumulation_steps,
             batch_size=args.batch_size,
@@ -583,6 +586,7 @@ def parse_args():
     parser.add_argument('--use_amp', action='store_true', help='Use automatic mixed precision (bfloat16 on CUDA)')
     parser.add_argument('--accumulation_steps', type=int, default=1, help='Gradient accumulation steps (effective_batch = batch * steps)')
     parser.add_argument('--lamb', type=float, default=0.02, help='Weight for SIGReg loss vs invariance loss')
+    parser.add_argument('--gamma', type=float, default=1.0, help='Weight for invariance loss')
     
     # Logging/Saving
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
