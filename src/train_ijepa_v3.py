@@ -166,8 +166,8 @@ def init_model(
         logger.info("Enabled gradient checkpointing")
     
     # Compile models with torch.compile for speedup (PyTorch 2.0+)
-    # Using 'reduce-overhead' mode instead of 'max-autotune' to avoid CUDA graphs tensor overwriting issues
-    if hasattr(torch, 'compile'):
+    # Only use on CUDA - MPS has shader compilation bugs with torch.compile
+    if hasattr(torch, 'compile') and device.type == 'cuda':
         try:
             encoder1 = torch.compile(encoder1, mode='reduce-overhead')
             encoder2 = torch.compile(encoder2, mode='reduce-overhead')

@@ -555,6 +555,7 @@ class SharedPredictor(nn.Module):
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
         init_std=0.02,
+        num_tokens=4,
         **kwargs
     ):
         super().__init__()
@@ -564,7 +565,8 @@ class SharedPredictor(nn.Module):
         
         # Learnable mask token
         self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
-        
+        self.num_tokens = num_tokens
+        self.learnable_tokens = nn.Parameter(torch.zeros(1, num_tokens, predictor_embed_dim))
         # Stochastic depth
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         
@@ -635,11 +637,13 @@ class SharedPredictor(nn.Module):
         
         Args:
             x: context encoder output of shape (B*nenc, N_ctx, D)
-            masks_x: list of context masks (encoder masks)
-            masks: list of target masks (prediction masks)
+            masks_ctx: list of context masks (encoder masks)
+            masks_tgt: list of target masks (prediction masks)
+            other_ctx: cross-attention context from other modality
             
         Returns:
-            Predicted representations for target positions
+            Predicted representations for target positions (B, N_pred + num_tokens, D)
+            The last num_tokens are the learnable tokens.
         """
         assert (masks_tgt is not None) and (other_ctx is not None), 'Cannot run predictor without mask indices'
 
@@ -658,15 +662,17 @@ class SharedPredictor(nn.Module):
         # Create mask tokens with positional embeddings for target positions
         pos_embs = self.predictor_pos_embed.repeat(B, 1, 1)
         pos_embs = apply_masks(pos_embs, masks_tgt)
-        # pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
         
         # Initialize prediction tokens
         pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
         pred_tokens += pos_embs
         
-        # Concatenate context tokens with prediction tokens
+        # Expand learnable tokens for batch
+        learnable_queries = self.learnable_tokens.expand(B * len(masks_tgt), -1, -1)
+        
+        # Concatenate context tokens, prediction tokens, and learnable tokens
         x = x.repeat(len(masks_tgt), 1, 1)
-        x = torch.cat([x, pred_tokens], dim=1)
+        x = torch.cat([learnable_queries, x, pred_tokens], dim=1)
 
         # Forward through predictor blocks
         for self_blk, cross_blk in zip(self.predictor_self_blocks, self.predictor_cross_blocks):
@@ -674,12 +680,8 @@ class SharedPredictor(nn.Module):
             x = cross_blk(x, other_ctx)
         x = self.predictor_norm(x)
 
-        # for blk in self.predictor_cross_blocks:
-        #     x = blk(x, other_ctx)
-        # x = self.predictor_norm(x)
-
-        # Return only predictions for mask tokens
-        x = x[:, N_ctxt:]
+        # Return predictions (excluding context tokens)
+        x = x[:, (N_ctxt+self.num_tokens):]
         x = self.predictor_proj(x)
 
         return x
