@@ -379,7 +379,7 @@ def train_one_epoch(
             y_2_1 = probe(z_context2, masks_enc2, masks_pred1, z_context1)
 
             # Loss computed only on prediction tokens (excluding last 4 learnable tokens)
-            probe_loss = F.smooth_l1_loss(y_1_2[:, :-4], z_target2) + F.smooth_l1_loss(y_2_1[:, :-4], z_target1)
+            probe_loss = F.smooth_l1_loss(y_1_2, z_target2) + F.smooth_l1_loss(y_2_1, z_target1)
             loss = (lejepa_loss + probe_loss + inv_loss) / accumulation_steps  # Scale for gradient accumulation
         
         forward_time.update(time.time() - forward_start)

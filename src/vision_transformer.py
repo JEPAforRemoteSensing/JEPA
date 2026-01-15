@@ -602,6 +602,7 @@ class SharedPredictor(nn.Module):
         # Weight initialization
         self.init_std = init_std
         trunc_normal_(self.mask_token, std=self.init_std)
+        trunc_normal_(self.learnable_tokens, std=self.init_std)  # Initialize learnable tokens!
         self.apply(self._init_weights)
         self.fix_init_weight()
 
@@ -667,12 +668,12 @@ class SharedPredictor(nn.Module):
         pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
         pred_tokens += pos_embs
         
-        # Expand learnable tokens for batch
-        learnable_queries = self.learnable_tokens.expand(B * len(masks_tgt), -1, -1)
+        # Expand learnable tokens for batch (use contiguous to avoid view/stride issues)
+        learnable_queries = self.learnable_tokens.expand(B * len(masks_tgt), -1, -1).contiguous()
         
         # Concatenate context tokens, prediction tokens, and learnable tokens
         x = x.repeat(len(masks_tgt), 1, 1)
-        x = torch.cat([learnable_queries, x, pred_tokens], dim=1)
+        x = torch.cat([x, learnable_queries, pred_tokens], dim=1)
 
         # Forward through predictor blocks
         for self_blk, cross_blk in zip(self.predictor_self_blocks, self.predictor_cross_blocks):
@@ -681,7 +682,7 @@ class SharedPredictor(nn.Module):
         x = self.predictor_norm(x)
 
         # Return predictions (excluding context tokens)
-        x = x[:, (N_ctxt+self.num_tokens):]
+        x = x[:, N_ctxt:]
         x = self.predictor_proj(x)
 
         return x

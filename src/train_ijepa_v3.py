@@ -370,7 +370,8 @@ def train_one_epoch(
             # Prediction
             y_1_2 = probe(z_context1, masks_enc1, masks_pred2, z_context2)
             y_2_1 = probe(z_context2, masks_enc2, masks_pred1, z_context1)
-
+            y_1_2 = y_1_2[:, 4:, :].contiguous()
+            y_2_1 = y_2_1[:, 4:, :].contiguous()
             probe_loss = F.smooth_l1_loss(y_1_2, z_target2) + F.smooth_l1_loss(y_2_1, z_target1)
             loss = (lejepa_loss + probe_loss + inv_loss) / accumulation_steps  # Scale for gradient accumulation
         
