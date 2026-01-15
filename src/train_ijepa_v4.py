@@ -273,6 +273,7 @@ def init_optimizer(
     
     return optimizer, scheduler
 
+first = True
 
 def train_one_epoch(
     device,
@@ -311,6 +312,7 @@ def train_one_epoch(
     Returns:
         avg_loss: average loss for the epoch
     """
+    global first
     encoder1.train()
     encoder2.train()
     probe.train()
@@ -368,6 +370,11 @@ def train_one_epoch(
             inv_loss = F.smooth_l1_loss(z_context1, z_context2) * gamma
 
             # Prediction (output includes pred_tokens + learnable_tokens, last 4 are learnable)
+            if first:
+                init_dict = {'z_context1': z_context1, 'masks_enc1': masks_enc1, 'masks_pred2': masks_pred2, 'z_context2': z_context2}
+                torch.save(init_dict, 'init_dict.pt')
+                first = False
+            
             y_1_2 = probe(z_context1, masks_enc1, masks_pred2, z_context2)
             y_2_1 = probe(z_context2, masks_enc2, masks_pred1, z_context1)
 
