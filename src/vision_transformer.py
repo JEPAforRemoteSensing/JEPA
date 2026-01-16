@@ -643,8 +643,9 @@ class SharedPredictor(nn.Module):
             other_ctx: cross-attention context from other modality
             
         Returns:
-            Predicted representations for target positions (B, N_pred + num_tokens, D)
-            The last num_tokens are the learnable tokens.
+            Predicted representations for target positions (B, N_pred, D)
+            Same shape as without learnable queries - queries participate in 
+            attention but are excluded from final output.
         """
         assert (masks_tgt is not None) and (other_ctx is not None), 'Cannot run predictor without mask indices'
 
@@ -667,22 +668,27 @@ class SharedPredictor(nn.Module):
         # Initialize prediction tokens
         pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
         pred_tokens += pos_embs
+        N_pred = pred_tokens.size(1)
         
         # Expand learnable tokens for batch (use contiguous to avoid view/stride issues)
         learnable_queries = self.learnable_tokens.expand(B * len(masks_tgt), -1, -1).contiguous()
         
-        # Concatenate context tokens, prediction tokens, and learnable tokens
+        # Concatenate: [context, pred_tokens, learnable_queries]
+        # Learnable queries at the end so we can easily slice them off
         x = x.repeat(len(masks_tgt), 1, 1)
-        x = torch.cat([x, learnable_queries, pred_tokens], dim=1)
+        x = torch.cat([x, pred_tokens, learnable_queries], dim=1)
 
         # Forward through predictor blocks
+        # Learnable queries participate in self-attention, influencing all tokens
         for self_blk, cross_blk in zip(self.predictor_self_blocks, self.predictor_cross_blocks):
             x = self_blk(x)
             x = cross_blk(x, other_ctx)
         x = self.predictor_norm(x)
 
-        # Return predictions (excluding context tokens)
-        x = x[:, N_ctxt:]
+        # Return only prediction tokens (exclude context and learnable queries)
+        # x shape: [B, N_ctxt + N_pred + num_tokens, D]
+        # We want: [B, N_pred, D]
+        x = x[:, N_ctxt:N_ctxt + N_pred, :]
         x = self.predictor_proj(x)
 
         return x

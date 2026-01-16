@@ -367,11 +367,9 @@ def train_one_epoch(
             lejepa_loss = sigreg_loss * lamb
             inv_loss = F.smooth_l1_loss(z_context1, z_context2) * gamma
             
-            # Prediction
+            # Prediction - output already excludes learnable queries (they participate in attention only)
             y_1_2 = probe(z_context1, masks_enc1, masks_pred2, z_context2)
             y_2_1 = probe(z_context2, masks_enc2, masks_pred1, z_context1)
-            y_1_2 = y_1_2[:, 4:, :].contiguous()
-            y_2_1 = y_2_1[:, 4:, :].contiguous()
             probe_loss = F.smooth_l1_loss(y_1_2, z_target2) + F.smooth_l1_loss(y_2_1, z_target1)
             loss = (lejepa_loss + probe_loss + inv_loss) / accumulation_steps  # Scale for gradient accumulation
         
@@ -485,7 +483,7 @@ def main(args):
     
     # Create transforms
     transform1 = make_transforms(num_channels=2)
-    transform2 = make_transforms_rgb(num_channels=3)
+    transform2 = make_transforms(num_channels=10)
     
     # Create data loaders with optimized settings
     # Note: persistent_workers keeps workers alive between epochs (reduces overhead)
@@ -611,7 +609,7 @@ def parse_args():
                         choices=['vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'vit_huge', 'vit_giant'])
     parser.add_argument('--patch_size', type=int, default=16)
     parser.add_argument('--in_chans1', type=int, default=2)
-    parser.add_argument('--in_chans2', type=int, default=3)
+    parser.add_argument('--in_chans2', type=int, default=10)
     parser.add_argument('--pred_depth', type=int, default=4)
     parser.add_argument('--pred_emb_dim', type=int, default=768)
     
@@ -651,7 +649,7 @@ def parse_args():
     # Logging/Saving
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
-    parser.add_argument('--save_freq', type=int, default=10)
+    parser.add_argument('--save_freq', type=int, default=1)
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
     
     # Weights & Biases
