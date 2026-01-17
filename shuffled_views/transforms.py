@@ -3,16 +3,12 @@ from torchvision.transforms import v2
 def make_transforms(
     num_channels,
     crop_size=224,
-    crop_scale=(0.8, 1.0),
-    color_jitter=1.0,
+    crop_scale=(0.3, 1.0),
     horizontal_flip=True,
     vertical_flip=True,
-    color_distortion=False,
     gaussian_blur=True,
-    normalization=None
 ):
-    if normalization is None:
-        normalization = ([0]*num_channels, [1]*num_channels)
+    normalization = ([0]*num_channels, [1]*num_channels)
     transform = v2.Compose([
         v2.RandomResizedCrop(crop_size, scale=crop_scale),
         v2.RandomHorizontalFlip() if horizontal_flip else v2.Identity(),
@@ -61,3 +57,4 @@ def make_transforms_rgb(
     ])
 
     return transform
+

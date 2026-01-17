@@ -3,6 +3,7 @@
 from multiprocessing import Value
 import torch
 import math
+import copy
 
 class DefaultCollator(object):
     def __call__(self, batch):
@@ -34,7 +35,7 @@ class RandomMaskCollator(object):
     def __call__(self, batch):
         B = len(batch)
 
-        collated_batch = torch.utils.data.default_collate(batch)
+        collated_batch1, collated_batch2 = torch.utils.data.default_collate(batch)
 
         seed = self.step()
         g = torch.Generator()
@@ -51,10 +52,13 @@ class RandomMaskCollator(object):
             collated_masks_enc.append([m[:num_keep]])
             collated_masks_pred.append([m[num_keep:]])
 
-        collated_masks_pred = torch.utils.data.default_collate(collated_masks_pred)
-        collated_masks_enc = torch.utils.data.default_collate(collated_masks_enc)
+        collated_masks_pred1 = torch.utils.data.default_collate(collated_masks_pred)
+        collated_masks_enc1 = torch.utils.data.default_collate(collated_masks_enc)
 
-        return collated_batch, collated_masks_enc, collated_masks_pred
+        collated_masks_pred2 = copy.deepcopy(collated_masks_pred1)
+        collated_masks_enc2 = copy.deepcopy(collated_masks_enc1)
+
+        return ((collated_batch1, collated_masks_enc1, collated_masks_pred1), (collated_batch2, collated_masks_enc2, collated_masks_pred2))
 
 class MultiBlockMaskCollator(object):
     def __init__(
