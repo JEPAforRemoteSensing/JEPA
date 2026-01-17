@@ -323,7 +323,11 @@ def train_one_epoch(
     epoch_start = time.time()
     
     for itr, ((images1, masks_enc1, masks_pred1), (images2, masks_enc2, masks_pred2)) in enumerate(data_loader):
-        
+        # s1_img = images1[0, 0, 0, :10]
+        # s2_img = images2[0, 0, 0, :10]
+        # print(s1_img)
+        # print(s2_img)
+        # print("-----")
         iter_start = time.time()
         
         # Move to device

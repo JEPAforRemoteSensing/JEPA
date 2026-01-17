@@ -4,15 +4,10 @@ def make_transforms(
     num_channels,
     crop_size=224,
     crop_scale=(0.8, 1.0),
-    color_jitter=1.0,
     horizontal_flip=True,
     vertical_flip=True,
-    color_distortion=False,
     gaussian_blur=True,
-    normalization=None
 ):
-    if normalization is None:
-        normalization = ([0]*num_channels, [1]*num_channels)
     transform = v2.Compose([
         v2.RandomResizedCrop(crop_size, scale=crop_scale),
         v2.RandomHorizontalFlip() if horizontal_flip else v2.Identity(),
@@ -26,8 +21,10 @@ def make_transforms(
         v2.RandomApply(
             [v2.GaussianBlur(kernel_size=7, sigma=(0.1, 2.0))],
             p=0.5) if gaussian_blur else v2.Identity(),
-        v2.ToTensor(),
-        v2.Normalize(mean=normalization[0], std=normalization[1])
+        v2.Normalize(
+            mean=[-17.453, -11.222, 436.825, 684.856, 653.592, 1113.942, 2371.036, 2848.349, 2978.488, 2317.410, 1453.706, 3101.315],
+            std=[3.781, 3.495, 237.397, 276.302, 432.002, 388.312, 547.779, 726.583, 795.423, 645.402, 704.461, 762.472]
+        )
     ])
 
     return transform
