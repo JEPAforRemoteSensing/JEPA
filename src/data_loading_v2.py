@@ -58,6 +58,17 @@ class MultiChannelDataset(torch.utils.data.Dataset):
         c1 = mc_img_c_h_w1.shape[0]
         c2 = mc_img_c_h_w2.shape[0]
 
+        s1_min = torch.tensor([-40, -30], dtype=torch.float32).view(-1, 1, 1)
+        s1_max = torch.tensor([-1.03, 6.72], dtype=torch.float32).view(-1, 1, 1)
+        s2_min = torch.tensor([0], dtype=torch.float32).view(-1, 1, 1)
+        s2_max = torch.tensor([3500, 4000, 4300, 4300, 5000, 6000, 6600, 5400, 5200, 6300], dtype=torch.float32).view(-1, 1, 1)
+
+        mc_img_c_h_w1 = torch.clamp(mc_img_c_h_w1, min=s1_min, max=s1_max)
+        mc_img_c_h_w2 = torch.clamp(mc_img_c_h_w2, min=s2_min, max=s2_max)
+        
+        mc_img_c_h_w1 = (mc_img_c_h_w1 - s1_min) / (s1_max - s1_min)
+        mc_img_c_h_w2 = (mc_img_c_h_w2 - s2_min) / (s2_max - s2_min)
+
         return torch.split(self.transform(torch.cat((mc_img_c_h_w1, mc_img_c_h_w2), dim=0)), [c1, c2], dim=0)
     
     def __len__(self):
@@ -66,17 +77,17 @@ class MultiChannelDataset(torch.utils.data.Dataset):
     def plot(self, idx):
         s1_img = tifffile.imread(f"{os.path.join(self.data_path1, self.metadata1[idx])}.tif")
         s2_img = tifffile.imread(f"{os.path.join(self.data_path2, self.metadata2[idx])}.tif")
-        
+
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         
         vv = s1_img[0]  # VV polarization
         vh = s1_img[1]  # VH polarization
         
-        vv_norm = (vv - vv.min()) / (vv.max() - vv.min())
-        vh_norm = (vh - vh.min()) / (vh.max() - vh.min())
+        # vv_norm = (vv - vv.min()) / (vv.max() - vv.min())
+        # vh_norm = (vh - vh.min()) / (vh.max() - vh.min())
         
-        vv_vh_ratio = np.clip(vv_norm / (vh_norm + 1e-10), 0, 1)
-        s1_rgb = np.stack([vv_norm, vh_norm, vv_vh_ratio], axis=-1)
+        vv_vh_ratio = vv - vh
+        s1_rgb = np.stack([vv, vh, vv_vh_ratio], axis=-1)
         
         axes[0].imshow(s1_rgb)
         axes[0].set_title(f'Sentinel-1 (SAR)\n{self.metadata1[idx]}', fontsize=10)

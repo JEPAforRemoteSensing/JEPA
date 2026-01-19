@@ -8,6 +8,11 @@ def make_transforms(
     vertical_flip=True,
     gaussian_blur=True,
 ):
+    s1_mean = [0.5786, 0.5114]
+    s1_std  = [0.097, 0.0951]
+
+    s2_mean = [0.1248, 0.1712, 0.152, 0.259, 0.4742, 0.4747, 0.4513, 0.4291, 0.2795, 0.4923]
+    s2_std  = [0.0673, 0.0686, 0.1001, 0.09, 0.1094, 0.121, 0.1205, 0.1192, 0.1351, 0.121]
     transform = v2.Compose([
         v2.RandomResizedCrop(crop_size, scale=crop_scale),
         v2.RandomHorizontalFlip() if horizontal_flip else v2.Identity(),
@@ -22,8 +27,8 @@ def make_transforms(
             [v2.GaussianBlur(kernel_size=7, sigma=(0.1, 2.0))],
             p=0.5) if gaussian_blur else v2.Identity(),
         v2.Normalize(
-            mean=[-17.453, -11.222, 436.825, 684.856, 653.592, 1113.942, 2371.036, 2848.349, 2978.488, 2317.410, 1453.706, 3101.315],
-            std=[3.781, 3.495, 237.397, 276.302, 432.002, 388.312, 547.779, 726.583, 795.423, 645.402, 704.461, 762.472]
+            mean=s1_mean+s2_mean,
+            std=s1_std+s2_std
         )
     ])
 
