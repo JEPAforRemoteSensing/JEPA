@@ -37,6 +37,12 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         self.modality = modality
         self.metadata = []
         
+        # Preprocessing parameters matching data_loading_v2
+        self.s1_min = torch.tensor([-40, -30], dtype=torch.float32).view(-1, 1, 1)
+        self.s1_max = torch.tensor([-1.03, 6.72], dtype=torch.float32).view(-1, 1, 1)
+        self.s2_min = torch.tensor([0], dtype=torch.float32).view(-1, 1, 1)
+        self.s2_max = torch.tensor([3500, 4000, 4300, 4300, 5000, 6000, 6600, 5400, 5200, 6300], dtype=torch.float32).view(-1, 1, 1)
+        
         for img_file in os.scandir(self.data_path):
             if img_file.name.endswith('.tif'):
                 self.metadata.append(img_file.name)
@@ -46,9 +52,15 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         img_path = os.path.join(self.data_path, filename)
         img = torch.from_numpy(tifffile.imread(img_path)).float()
         
-        # BGR to RGB for S2, keep as-is for S1
-        if self.modality == 's2':
-            img = img[[2, 1, 0], :, :]
+        # Apply preprocessing matching data_loading_v2
+        if self.modality == 's1':
+            # Clamp and normalize S1 data
+            img = torch.clamp(img, min=self.s1_min, max=self.s1_max)
+            img = (img - self.s1_min) / (self.s1_max - self.s1_min)
+        else:  # s2
+            # Clamp and normalize S2 data
+            img = torch.clamp(img, min=self.s2_min, max=self.s2_max)
+            img = (img - self.s2_min) / (self.s2_max - self.s2_min)
         
         if self.transform:
             img = self.transform(img)
@@ -61,7 +73,7 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         return len(self.metadata)
 
 
-def load_models(checkpoint_path, device, model_name='vit_base', patch_size=16, crop_size=224, in_chans1=2, in_chans2=3):
+def load_models(checkpoint_path, device, model_name='vit_base', patch_size=16, crop_size=224, in_chans1=2, in_chans2=10):
     """Load both encoders from checkpoint or return None for random baseline."""
     
     if checkpoint_path.lower() == 'random':
@@ -403,7 +415,7 @@ def main(args):
     )
     
     transform_s1 = make_transforms(num_channels=2)
-    transform_s2 = make_transforms_rgb(num_channels=3)
+    transform_s2 = make_transforms(num_channels=10)
     
     modes = ['s1_s1', 's2_s2', 's1_s2', 's2_s1'] if args.mode == 'all' else [args.mode]
     
@@ -483,7 +495,7 @@ def parse_args():
                         choices=['vit_tiny', 'vit_small', 'vit_base', 'vit_large', 'vit_huge', 'vit_giant'])
     parser.add_argument('--patch_size', type=int, default=16)
     parser.add_argument('--in_chans1', type=int, default=2)
-    parser.add_argument('--in_chans2', type=int, default=3)
+    parser.add_argument('--in_chans2', type=int, default=10)
     parser.add_argument('--crop_size', type=int, default=224)
     
     # Data

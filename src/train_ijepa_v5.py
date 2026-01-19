@@ -12,7 +12,7 @@ import wandb
 from encoder import build_encoder, get_num_patches
 from data_loading_v2 import load_data
 from masks import RandomMaskCollator
-from transforms import make_transforms
+from transforms import make_transforms_test
 from vision_transformer import SharedPredictor
 
 # Logging setup
@@ -480,7 +480,7 @@ def main(args):
     mask_collator = RandomMaskCollator()
     
     # Create transforms
-    transform = make_transforms(num_channels=args.in_chans1 + args.in_chans2)
+    transform = make_transforms_test(num_channels=args.in_chans1 + args.in_chans2)
     
     # Create data loaders with optimized settings
     # Note: persistent_workers keeps workers alive between epochs (reduces overhead)
