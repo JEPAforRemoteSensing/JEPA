@@ -10,9 +10,9 @@ import torch.nn.functional as F
 import wandb
 
 from encoder import build_encoder, get_num_patches
-from data_loading import load_data
+from data_loading_v2 import load_data
 from masks import RandomMaskCollator
-from transforms import make_transforms
+from transforms import make_transforms_test
 from vision_transformer import SharedPredictor
 
 # Logging setup
@@ -274,8 +274,7 @@ def train_one_epoch(
     encoder1,
     encoder2,
     probe,
-    data_loader1,
-    data_loader2,
+    data_loader,
     optimizer,
     scheduler,
     epoch,
@@ -323,7 +322,12 @@ def train_one_epoch(
     step_time = AverageMeter()
     epoch_start = time.time()
     
-    for itr, ((images1, masks_enc1, masks_pred1), (images2, masks_enc2, masks_pred2)) in enumerate(zip(data_loader1, data_loader2)):
+    for itr, ((images1, masks_enc1, masks_pred1), (images2, masks_enc2, masks_pred2)) in enumerate(data_loader):
+        # s1_img = images1[0, 0, 0, :10]
+        # s2_img = images2[0, 0, 0, :10]
+        # print(s1_img)
+        # print(s2_img)
+        # print("-----")
         iter_start = time.time()
         
         # Move to device
@@ -399,7 +403,7 @@ def train_one_epoch(
         
         if itr % log_freq == 0:
             logger.info(
-                f'Epoch [{epoch}][{itr}/{len(data_loader1)}] '
+                f'Epoch [{epoch}][{itr}/{len(data_loader)}] '
                 f'Loss: {loss_meter.avg:.4f} '
                 f'LR: {scheduler.get_last_lr()[0]:.6f} | '
                 f'Time: data={data_time.avg*1000:.1f}ms fwd={forward_time.avg*1000:.1f}ms '
@@ -424,7 +428,7 @@ def train_one_epoch(
     
     epoch_time = time.time() - epoch_start
     logger.info(f'Epoch {epoch} completed in {epoch_time:.2f}s ({epoch_time/60:.2f}m). '
-                f'Throughput: {len(data_loader1) * batch_size / epoch_time:.2f} samples/sec')
+                f'Throughput: {len(data_loader) * batch_size / epoch_time:.2f} samples/sec')
     
     return loss_meter.avg
 
@@ -473,47 +477,31 @@ def main(args):
     )
     
     # Create mask collator
-    mask_collator1 = RandomMaskCollator()
-    mask_collator2 = RandomMaskCollator()
+    mask_collator = RandomMaskCollator()
     
     # Create transforms
-    transform1 = make_transforms(num_channels=2)
-    transform2 = make_transforms(num_channels=10)
+    transform = make_transforms_test(num_channels=args.in_chans1 + args.in_chans2)
     
     # Create data loaders with optimized settings
     # Note: persistent_workers keeps workers alive between epochs (reduces overhead)
     # prefetch_factor controls how many batches to prefetch per worker
-    data_loader1 = load_data(
-        root=args.data_root1,
+    data_loader = load_data(
+        root1=args.data_root1,
+        root2=args.data_root2,
+        metadata=args.metadata,
         split='train',
         batch_size=args.batch_size,
         shuffle=True,
-        seed=_GLOBAL_SEED,
         num_workers=args.num_workers,
-        collate_fn=mask_collator1,
+        collate_fn=mask_collator,
         pin_memory=True,
         drop_last=True,
-        transform=transform1,
-        persistent_workers=True if args.num_workers > 0 else False,
-        prefetch_factor=4 if args.num_workers > 0 else None,
-    )
-    
-    data_loader2 = load_data(
-        root=args.data_root2,
-        split='train',
-        batch_size=args.batch_size,
-        shuffle=True,
-        seed=_GLOBAL_SEED,
-        num_workers=args.num_workers,
-        collate_fn=mask_collator2,
-        pin_memory=True,
-        drop_last=True,
-        transform=transform2,
+        transform=transform,
         persistent_workers=True if args.num_workers > 0 else False,
         prefetch_factor=4 if args.num_workers > 0 else None,
     )
 
-    iterations_per_epoch = len(data_loader1)
+    iterations_per_epoch = len(data_loader)
     
     # Initialize optimizer and scheduler
     optimizer, scheduler = init_optimizer(
@@ -551,8 +539,7 @@ def main(args):
             encoder1=encoder1,
             encoder2=encoder2,
             probe=probe,
-            data_loader1=data_loader1,
-            data_loader2=data_loader2,
+            data_loader=data_loader,
             optimizer=optimizer,
             scheduler=scheduler,
             epoch=epoch,
@@ -613,6 +600,7 @@ def parse_args():
     # Data
     parser.add_argument('--data_root1', type=str, default='data/BEN_14k/BigEarthNet-S1')
     parser.add_argument('--data_root2', type=str, default='data/BEN_14k/BigEarthNet-S2')
+    parser.add_argument('--metadata', type=str, default='data/BEN_14k/serbia_metadata.parquet')
     parser.add_argument('--crop_size', type=int, default=224)
     parser.add_argument('--crop_scale', type=float, nargs=2, default=[0.3, 1.0])
     parser.add_argument('--batch_size', type=int, default=64)
@@ -646,7 +634,7 @@ def parse_args():
     # Logging/Saving
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
-    parser.add_argument('--save_freq', type=int, default=1)
+    parser.add_argument('--save_freq', type=int, default=20)
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
     
     # Weights & Biases
