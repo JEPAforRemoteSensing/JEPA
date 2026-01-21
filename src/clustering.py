@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tifffile
+from transforms import make_transforms_test
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
@@ -45,6 +46,11 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         self.modality = modality
         self.metadata = []
         
+        self.s1_min = torch.tensor([-40, -30], dtype=torch.float32).view(-1, 1, 1)
+        self.s1_max = torch.tensor([-1.03, 6.72], dtype=torch.float32).view(-1, 1, 1)
+        self.s2_min = torch.tensor([0], dtype=torch.float32).view(-1, 1, 1)
+        self.s2_max = torch.tensor([3500, 4000, 4300, 4300, 5000, 6000, 6600, 5400, 5200, 6300], dtype=torch.float32).view(-1, 1, 1)
+
         for img_file in os.scandir(self.data_path):
             if img_file.name.endswith('.tif'):
                 self.metadata.append(img_file.name)
@@ -54,10 +60,18 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         img_path = os.path.join(self.data_path, filename)
         img = torch.from_numpy(tifffile.imread(img_path)).float()
         
-        # BGR to RGB for S2, keep as-is for S1
-        if self.modality == 's2':
-            img = img[[2, 1, 0], :, :]
-        
+        # # BGR to RGB for S2, keep as-is for S1
+        # if self.modality == 's2':
+        #     img = img[[2, 1, 0], :, :]
+        if self.modality == 's1':
+            # Clamp and normalize S1 data
+            img = torch.clamp(img, min=self.s1_min, max=self.s1_max)
+            img = (img - self.s1_min) / (self.s1_max - self.s1_min)
+        else:  # s2
+            # Clamp and normalize S2 data
+            img = torch.clamp(img, min=self.s2_min, max=self.s2_max)
+            img = (img - self.s2_min) / (self.s2_max - self.s2_min)
+
         if self.transform:
             img = self.transform(img)
         
@@ -69,27 +83,8 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         return len(self.metadata)
 
 
-def make_eval_transform(num_channels, crop_size=224):
-    """Create evaluation transform (no augmentation, just resize and normalize)."""
-    from torchvision.transforms import v2
-    
-    if num_channels == 3:
-        # RGB normalization for S2
-        normalization = ((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-    else:
-        # Default normalization for S1
-        normalization = ([0] * num_channels, [1] * num_channels)
-    
-    transform = v2.Compose([
-        v2.Resize((crop_size, crop_size)),
-        v2.ToTensor(),
-        v2.Normalize(mean=normalization[0], std=normalization[1])
-    ])
-    return transform
-
-
 def load_encoders(checkpoint_path, device, model_name='vit_base', patch_size=16, 
-                  crop_size=224, in_chans1=2, in_chans2=3):
+                  crop_size=224, in_chans1=2, in_chans2=10):
     """Load both encoders from checkpoint."""
     
     encoder1, embed_dim1 = build_encoder(
@@ -306,8 +301,8 @@ def main(args):
     )
     
     # Create transforms
-    transform_s1 = make_eval_transform(num_channels=args.in_chans_s1, crop_size=args.crop_size)
-    transform_s2 = make_eval_transform(num_channels=args.in_chans_s2, crop_size=args.crop_size)
+    transform_s1 = make_transforms_test(num_channels=args.in_chans_s1, crop_size=args.crop_size)
+    transform_s2 = make_transforms_test(num_channels=args.in_chans_s2, crop_size=args.crop_size)
     
     # Create datasets
     logger.info("Creating datasets...")
@@ -462,7 +457,7 @@ if __name__ == '__main__':
                         help='Input crop size')
     parser.add_argument('--in_chans_s1', type=int, default=2,
                         help='Number of input channels for S1')
-    parser.add_argument('--in_chans_s2', type=int, default=3,
+    parser.add_argument('--in_chans_s2', type=int, default=10,
                         help='Number of input channels for S2')
     
     # Data loading
