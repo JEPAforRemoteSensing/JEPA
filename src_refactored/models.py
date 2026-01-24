@@ -8,8 +8,8 @@ class MEMPJepa(nn.Module):
         super().__init__()
         self.encoder1 = vit_base(in_chans=in_chans1)
         self.encoder2 = vit_base(in_chans=in_chans2)
-        self.probe1 = vit_predictor(num_patches=16)
-        self.probe2 = vit_predictor(num_patches=16)
+        self.probe1 = vit_predictor(num_patches=196)
+        self.probe2 = vit_predictor(num_patches=196)
     
     def forward(self, images1, images2, masks_enc=None, masks_pred=None):
         if self.training:

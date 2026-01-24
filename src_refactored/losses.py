@@ -30,8 +30,8 @@ class MEMPLoss(nn.Module):
 
         sigreg_loss = statistic.mean()
 
-        probe1_loss = F.mse_loss(z_tgt1_pred, z_tgt1)
-        probe2_loss = F.mse_loss(z_tgt2_pred, z_tgt2)
+        probe1_loss = F.mse_loss(z_tgt1_pred, z_tgt1.detach())
+        probe2_loss = F.mse_loss(z_tgt2_pred, z_tgt2.detach())
 
         return inv_loss, sigreg_loss, probe1_loss, probe2_loss
 

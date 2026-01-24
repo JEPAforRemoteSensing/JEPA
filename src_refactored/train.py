@@ -27,7 +27,7 @@ def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, devi
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
-    model.load_state_dict(checkpoint['encoder1'])
+    model.load_state_dict(checkpoint['model'])
     logger.info("Loaded model weights")
     
     if optimizer is not None and 'optimizer' in checkpoint:
@@ -182,9 +182,9 @@ def main(args):
                 # z_ctx1, z_ctx2: B, N_ctx, D
                 # z_tgt1, z_tgt2: B, N_tgt, D
                 # z_tgt1_pred, z_tgt2_pred: B, N_tgt, D
-                z_ctx1, z_tgt1, z_ctx2, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(images1, images2, masks_enc, masks_pred)
+                z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(images1, images2, masks_enc, masks_pred)
 
-                inv_loss, sigreg_loss, probe1_loss, probe2_loss = loss_fn(z_ctx1, z_tgt1, z_ctx2, z_tgt2, z_tgt1_pred, z_tgt2_pred)
+                inv_loss, sigreg_loss, probe1_loss, probe2_loss = loss_fn(z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred)
 
                 loss = args.gamma * inv_loss + args.lamb * sigreg_loss + probe1_loss + probe2_loss
             
