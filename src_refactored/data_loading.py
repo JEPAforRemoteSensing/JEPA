@@ -10,7 +10,7 @@ class MultiChannelDataset(torch.utils.data.Dataset):
         self.data_path1 = os.path.join(root1, split)
         self.data_path2 = os.path.join(root2, split)
         self.transform = transform
-
+        self.split = split
         self.metadata = pd.read_parquet(metadata)
         self.metadata1 = self.metadata[self.metadata['split'] == split]['s1_name'].to_list()
         self.metadata2 = self.metadata[self.metadata['split'] == split]['patch_id'].to_list()
@@ -32,7 +32,10 @@ class MultiChannelDataset(torch.utils.data.Dataset):
         mc_img_c_h_w1 = (mc_img_c_h_w1 - s1_min) / (s1_max - s1_min)
         mc_img_c_h_w2 = (mc_img_c_h_w2 - s2_min) / (s2_max - s2_min)
 
-        return torch.split(self.transform(torch.cat((mc_img_c_h_w1, mc_img_c_h_w2), dim=0)), [c1, c2], dim=0)
+        if self.split == 'train':
+            return torch.split(self.transform(torch.cat((mc_img_c_h_w1, mc_img_c_h_w2), dim=0)), [c1, c2], dim=0)
+        else:
+            return torch.split(self.transform(torch.cat((mc_img_c_h_w1, mc_img_c_h_w2), dim=0)), [c1, c2], dim=0), idx
     
     def __len__(self):
         return len(self.metadata1)

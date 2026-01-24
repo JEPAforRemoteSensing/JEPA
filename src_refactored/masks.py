@@ -10,6 +10,12 @@ class DefaultCollator(object):
         collated_batch = torch.utils.data.default_collate(batch)
         return collated_batch, None, None
 
+class EvalCollator(object):
+    def __call__(self, batch):
+        images, idxs = zip(*batch)
+        img1, img2 = zip(*images)
+        return torch.stack(img1), torch.stack(img2), torch.tensor(idxs)
+
 class RandomMaskCollator(object):
     def __init__(
         self,
