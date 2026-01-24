@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
     parser.add_argument('--save_freq', type=int, default=20)
-    parser.add_argument('--eval_freq', type=int, default=20)
+    parser.add_argument('--eval_freq', type=int, default=5)
     parser.add_argument('--top_k', type=int, default=5)
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
     
@@ -134,6 +134,8 @@ def main(args):
         in_chans1=args.in_chans1,
         in_chans2=args.in_chans2,
     ).to(device)
+
+    model.compile()
     
     # Define loss, optimizer and scheduler
     warmup_iters = args.warmup_epochs * iterations_per_epoch
@@ -185,8 +187,9 @@ def main(args):
                 z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(images1, images2, masks_enc, masks_pred)
 
                 inv_loss, sigreg_loss, probe1_loss, probe2_loss = loss_fn(z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred)
-
-                loss = args.gamma * inv_loss + args.lamb * sigreg_loss + probe1_loss + probe2_loss
+                inv_loss *= args.gamma
+                sigreg_loss *= args.lamb
+                loss = inv_loss + sigreg_loss + probe1_loss + probe2_loss
             
             # Backward pass
             scaler.scale(loss).backward()

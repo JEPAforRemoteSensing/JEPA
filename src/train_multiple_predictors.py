@@ -163,7 +163,8 @@ def init_model(
         try:
             encoder1 = torch.compile(encoder1, mode='reduce-overhead')
             encoder2 = torch.compile(encoder2, mode='reduce-overhead')
-            probe = torch.compile(probe, mode='reduce-overhead')
+            probe1 = torch.compile(probe1, mode='reduce-overhead')
+            probe2 = torch.compile(probe2, mode='reduce-overhead')
             logger.info("Models compiled with torch.compile (reduce-overhead mode)")
         except Exception as e:
             logger.warning(f"torch.compile failed: {e}. Continuing without compilation.")
