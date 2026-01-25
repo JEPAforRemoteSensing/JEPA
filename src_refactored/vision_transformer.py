@@ -42,7 +42,7 @@ def apply_masks(x, masks):
     """
     all_x = []
     for m in masks:
-        mask_keep = m.unsqueeze(-1).repeat(1, 1, x.size(-1))
+        mask_keep = m.unsqueeze(-1).repeat(1, 1, x.size(-1)) # [B, num_keep, D]
         all_x += [torch.gather(x, dim=1, index=mask_keep)]
     return torch.cat(all_x, dim=0)
 
@@ -259,8 +259,8 @@ class VisionTransformerPredictor(nn.Module):
         num_patches,
         embed_dim=768,
         predictor_embed_dim=384,
-        depth=6,
-        num_heads=12,
+        depth=2,
+        num_heads=4,
         mlp_ratio=4.0,
         qkv_bias=True,
         qk_scale=None,
@@ -365,13 +365,11 @@ class VisionTransformer(nn.Module):
     """ Vision Transformer """
     def __init__(
         self,
-        img_size=[224],
+        img_size=[96],
         patch_size=16,
         in_chans=3,
         embed_dim=768,
-        predictor_embed_dim=384,
         depth=12,
-        predictor_depth=12,
         num_heads=12,
         mlp_ratio=4.0,
         qkv_bias=True,
@@ -477,6 +475,8 @@ class VisionTransformer(nn.Module):
         return torch.cat((class_emb.unsqueeze(0), pos_embed), dim=1)
 
 
+# Only vit_base implemented
+
 def vit_predictor(**kwargs):
     model = VisionTransformerPredictor(
         mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6),
@@ -486,22 +486,21 @@ def vit_predictor(**kwargs):
 
 def vit_tiny(patch_size=16, **kwargs):
     model = VisionTransformer(
-        patch_size=patch_size, embed_dim=192, depth=12, num_heads=3, mlp_ratio=4,
+        patch_size=patch_size, embed_dim=192, depth=4, num_heads=2, mlp_ratio=4,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 
 def vit_small(patch_size=16, **kwargs):
     model = VisionTransformer(
-        patch_size=patch_size, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4,
+        patch_size=patch_size, embed_dim=384, depth=8, num_heads=4, mlp_ratio=4,
         qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 
-def vit_base(patch_size=16, **kwargs):
+def vit_base(patch_size=16, embed_dim=768, img_size=[96], **kwargs):
     model = VisionTransformer(
-        patch_size=patch_size, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4,
-        qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
+        patch_size=patch_size, img_size=img_size, embed_dim=embed_dim, depth=12, num_heads=8, mlp_ratio=4, qkv_bias=True, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 

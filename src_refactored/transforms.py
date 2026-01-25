@@ -2,7 +2,7 @@ from torchvision.transforms import v2
 
 def make_transforms_test(
     num_channels,
-    crop_size=224,
+    crop_size=96,
 ):
     s1_mean = [0.5786, 0.5114]
     s1_std  = [0.097, 0.0951]
@@ -29,7 +29,7 @@ def make_transforms_test(
 
 def make_transforms(
     num_channels,
-    crop_size=224,
+    crop_size=96,
     crop_scale=(0.8, 1.0),
     horizontal_flip=True,
     vertical_flip=True,

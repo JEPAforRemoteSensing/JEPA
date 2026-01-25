@@ -20,7 +20,7 @@ class RandomMaskCollator(object):
     def __init__(
         self,
         ratio=0.5,
-        input_size=(224, 224),
+        input_size=(96, 96),
         patch_size=16,
     ):
         super(RandomMaskCollator, self).__init__()
@@ -60,13 +60,12 @@ class RandomMaskCollator(object):
 
         collated_masks_pred = torch.utils.data.default_collate(collated_masks_pred)
         collated_masks_enc = torch.utils.data.default_collate(collated_masks_enc)
-
         return (collated_batch1, collated_batch2, collated_masks_enc, collated_masks_pred)
 
 class MultiBlockMaskCollator(object):
     def __init__(
         self,
-        input_size=(224, 224),
+        input_size=(96, 96),
         patch_size=16,
         enc_mask_scale=(0.85, 1),
         pred_mask_scale=(0.2, 0.8),
