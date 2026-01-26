@@ -1,6 +1,27 @@
 import torch.nn as nn
 import torch
 from vision_transformer import vit_large, vit_base, vit_predictor
+import timm
+from torchvision.ops import MLP
+
+class ViTEncoder(nn.Module):
+    def __init__(self, proj_dim=384):
+        super().__init__()
+        self.backbone = timm.create_model(
+            "vit_small_patch8_224",
+            pretrained=False,
+            num_classes=1024,
+            drop_path_rate=0.1,
+            img_size=120,
+        )
+        self.proj = MLP(1024, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
+
+    def forward(self, x):
+        N, V = x.shape[:2]
+        emb = self.backbone(x.flatten(0, 1))
+        return emb, self.proj(emb).reshape(N, V, -1).transpose(0, 1)
+    
+
 
 class MEMPJepa(nn.Module):
     def __init__(self, in_chans1, in_chans2, patch_size, img_size):
@@ -30,3 +51,40 @@ class MEMPJepa(nn.Module):
 
             return z_emb1, z_emb2
 
+class MMLeJEPA(nn.Module):
+    def __init__(self, in_chans1, in_chans2, proj_dim=768, embed_dim=1024):
+        """Multi-modal LeJEPA Architecture"""
+        super().__init__()
+        self.encoder1 = timm.create_model(
+            'vit_base_patch8_224',
+            pretrained=False,
+            num_classes=embed_dim,
+            drop_path_rate=0.1,
+            img_size=120,
+            in_chans=in_chans1
+        )
+        self.proj1 = MLP(embed_dim, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
+
+        self.encoder2 = timm.create_model(
+            'vit_base_patch8_224',
+            pretrained=False,
+            num_classes=embed_dim,
+            drop_path_rate=0.1,
+            img_size=120,
+            in_chans=in_chans2
+        )
+        self.proj2 = MLP(embed_dim, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
+
+        self.probe = nn.Sequential(nn.LayerNorm(embed_dim), nn.Linear(embed_dim, 19))
+
+    def forward(self, s1, s2):
+        N, V = s1.shape[:2]
+        emb1 = self.encoder1(s1.flatten(0, 1))
+        emb2 = self.encoder2(s2.flatten(0, 1))
+
+        yhat = self.probe(torch.cat([emb1, emb2]).detach())
+
+        if self.training:
+            return yhat, self.proj1(emb1).reshape(N, V, -1).transpose(0, 1), self.proj2(emb2).reshape(N, V, -1).transpose(0, 1)
+        else:
+            return yhat
