@@ -135,7 +135,7 @@ def main(args):
     ).to(device)
 
     if args.compile:
-        model.compile()
+        model.compile(mode="reduce-overhead")
     
     # Define loss, optimizer and scheduler
     warmup_iters = args.warmup_epochs * iterations_per_epoch
@@ -153,7 +153,7 @@ def main(args):
     
     loss_fn = MEMPLoss().to(device)
     if args.compile:
-        loss_fn.compile()
+        loss_fn.compile(mode="reduce-overhead")
 
     # Automatic Mixed Precision setup (disabled for MPS - not fully supported)
     use_amp = args.use_amp and device.type == 'cuda'
