@@ -296,7 +296,7 @@ def main(args):
                 logger.info(f"Eval - s1→s1: {f1s['s1s1']:.4f} | s2→s2: {f1s['s2s2']:.4f} | s1→s2: {f1s['s1s2']:.4f} | s2→s1: {f1s['s2s1']:.4f}")
                 wandb.log({f'eval/{m}_{k}': v for m in metrics for k, v in metrics[m].items() if k == 'f1'} | {'epoch': epoch})
 
-
+        model.train()
         # Save checkpoint
         if epoch % args.save_freq == 0 or epoch == args.epochs:
             checkpoint = {

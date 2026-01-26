@@ -8,8 +8,8 @@ class MEMPJepa(nn.Module):
         super().__init__()
         self.encoder1 = vit_large(in_chans=in_chans1, img_size=[img_size], patch_size=patch_size)
         self.encoder2 = vit_large(in_chans=in_chans2, img_size=[img_size], patch_size=patch_size)
-        self.probe1 = vit_predictor(num_patches=int((img_size/patch_size)**2))
-        self.probe2 = vit_predictor(num_patches=int((img_size/patch_size)**2))
+        self.probe1 = vit_predictor(num_patches=int((img_size/patch_size)**2), embed_dim=1024)
+        self.probe2 = vit_predictor(num_patches=int((img_size/patch_size)**2), embed_dim=1024)
     
     def forward(self, images1, images2, masks_enc=None, masks_pred=None):
         if self.training:
