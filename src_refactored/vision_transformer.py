@@ -185,6 +185,37 @@ class Attention(nn.Module):
         return x, attn
 
 
+class CrossAttention(nn.Module):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+        super().__init__()
+        self.num_heads = num_heads
+        head_dim = dim // num_heads
+        self.scale = qk_scale or head_dim ** -0.5
+
+        self.q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x, context):
+        B, N, C = x.shape
+        _, M, _ = context.shape
+        
+        q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        kv = self.kv(context).reshape(B, M, 2, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x, attn
+
+
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
@@ -201,6 +232,26 @@ class Block(nn.Module):
         y, attn = self.attn(self.norm1(x))
         if return_attention:
             return attn
+        x = x + self.drop_path(y)
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
+
+class CrossBlock(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.norm_context = norm_layer(dim)
+        self.cross_attn = CrossAttention(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+    def forward(self, x, context):
+        y, attn = self.cross_attn(self.norm1(x), self.norm_context(context))
         x = x + self.drop_path(y)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
@@ -269,11 +320,13 @@ class VisionTransformerPredictor(nn.Module):
         drop_path_rate=0.0,
         norm_layer=nn.LayerNorm,
         init_std=0.02,
+        use_cross_attention=False,
         **kwargs
     ):
         super().__init__()
         self.predictor_embed = nn.Linear(embed_dim, predictor_embed_dim, bias=True)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
+        self.use_cross_attention = use_cross_attention
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         # --
         self.predictor_pos_embed = nn.Parameter(torch.zeros(1, num_patches, predictor_embed_dim),
@@ -288,6 +341,15 @@ class VisionTransformerPredictor(nn.Module):
                 dim=predictor_embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
             for i in range(depth)])
+        # --
+        if use_cross_attention:
+            self.cross_embed = nn.Linear(embed_dim, predictor_embed_dim, bias=True)
+            self.cross_blocks = nn.ModuleList([
+                CrossBlock(
+                    dim=predictor_embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                    drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+                for i in range(depth)])
+        # --
         self.predictor_norm = norm_layer(predictor_embed_dim)
         self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
         # ------
@@ -317,7 +379,7 @@ class VisionTransformerPredictor(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, masks_x, masks):
+    def forward(self, x, masks_x, masks, cross_context=None):
         assert (masks is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
 
         if not isinstance(masks_x, list):
@@ -349,9 +411,16 @@ class VisionTransformerPredictor(nn.Module):
         x = x.repeat(len(masks), 1, 1)
         x = torch.cat([x, pred_tokens], dim=1)
 
+        # -- prepare cross context if provided
+        if self.use_cross_attention and cross_context is not None:
+            cross_context = self.cross_embed(cross_context)
+            cross_context = cross_context.repeat(len(masks), 1, 1)
+
         # -- fwd prop
-        for blk in self.predictor_blocks:
+        for i, blk in enumerate(self.predictor_blocks):
             x = blk(x)
+            if self.use_cross_attention and cross_context is not None:
+                x = self.cross_blocks[i](x, cross_context)
         x = self.predictor_norm(x)
 
         # -- return preds for mask tokens

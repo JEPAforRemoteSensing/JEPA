@@ -17,7 +17,15 @@ def load_checkpoint(checkpoint_path, model, device='cpu'):
     logger.info(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     
-    model.load_state_dict(checkpoint['model'])
+    # Clean state dict - remove torch.compile() wrapper prefixes
+    state_dict = checkpoint['model']
+    cleaned_state_dict = {}
+    for k, v in state_dict.items():
+        # Remove _orig_mod. prefix added by torch.compile()
+        new_k = k.replace('_orig_mod.', '')
+        cleaned_state_dict[new_k] = v
+    
+    model.load_state_dict(cleaned_state_dict)
     logger.info("Loaded model weights")    
 
 
