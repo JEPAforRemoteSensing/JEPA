@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument('--weight_decay', type=float, default=0.05)
     parser.add_argument('--warmup_epochs', type=int, default=10)
     parser.add_argument('--use_amp', action='store_true')
-    parser.add_argument('--lamb', type=float, default=0.02, help='Weight for SIGReg loss')
+    parser.add_argument('--lamb', type=float, default=1.0, help='Weight for SIGReg loss')
     parser.add_argument('--gamma', type=float, default=1.0, help='Weight for invariance loss')
     parser.add_argument('--compile', action='store_true')
     
@@ -189,10 +189,9 @@ def main(args):
                 # z_tgt1_pred, z_tgt2_pred: B, N_tgt, D
                 z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(images1, images2, masks_enc, masks_pred)
 
-                inv_loss, sigreg_loss, probe1_loss, probe2_loss = loss_fn(z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred)
-                inv_loss *= args.gamma
+                sigreg_loss, probe1_loss, probe2_loss = loss_fn(z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred)
                 sigreg_loss *= args.lamb
-                loss = inv_loss + sigreg_loss + probe1_loss + probe2_loss
+                loss = sigreg_loss + probe1_loss + probe2_loss
             
             # Backward pass
             scaler.scale(loss).backward()
@@ -212,7 +211,6 @@ def main(args):
                     'train/probe1_loss': probe1_loss,
                     'train/probe2_loss': probe2_loss,
                     'train/sigreg_loss': sigreg_loss,
-                    'train/inv_loss': inv_loss,
                     'train/lr': scheduler.get_last_lr()[0],
                     'epoch': epoch,
                 })

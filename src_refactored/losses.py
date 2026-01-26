@@ -26,12 +26,11 @@ class MEMPLoss(nn.Module):
         err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
         statistic = (err @ self.weights) * proj.size(-2)
 
-        inv_loss = (proj.mean(0) - proj).square().mean()
 
         sigreg_loss = statistic.mean()
 
         probe1_loss = F.mse_loss(z_tgt1_pred, z_tgt1.detach())
         probe2_loss = F.mse_loss(z_tgt2_pred, z_tgt2.detach())
 
-        return inv_loss, sigreg_loss, probe1_loss, probe2_loss
+        return sigreg_loss, probe1_loss, probe2_loss
 
