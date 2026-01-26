@@ -95,5 +95,5 @@ class LeJEPADataset(MultiChannelDataset):
 
         views_s1 = torch.stack([self.transform_s1(mc_img_c_h_w1) for _ in range(self.V)])
         views_s2 = torch.stack([self.transform_s2(mc_img_c_h_w2) for _ in range(self.V)])
-        return views_s1, views_s2, labels
+        return views_s1, views_s2, torch.tensor(labels, dtype=float)
 

@@ -125,7 +125,8 @@ def main(args):
     val_data_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=eval_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
 
     iterations_per_epoch = len(data_loader)
-
+    torch._logging.set_logs(graph_code=True)
+    
     # Initialize model
     model = MEMPJepa(
         in_chans1=args.in_chans1,
@@ -135,7 +136,7 @@ def main(args):
     ).to(device)
 
     if args.compile:
-        model.compile(mode="reduce-overhead")
+        model = torch.compile(model, mode="reduce-overhead")
     
     # Define loss, optimizer and scheduler
     warmup_iters = args.warmup_epochs * iterations_per_epoch
@@ -153,7 +154,7 @@ def main(args):
     
     loss_fn = MEMPLoss().to(device)
     if args.compile:
-        loss_fn.compile(mode="reduce-overhead")
+        loss_fn = torch.compile(loss_fn, mode="reduce-overhead")
 
     # Automatic Mixed Precision setup (disabled for MPS - not fully supported)
     use_amp = args.use_amp and device.type == 'cuda'

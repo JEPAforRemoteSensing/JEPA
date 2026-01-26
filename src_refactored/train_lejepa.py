@@ -162,11 +162,10 @@ def main(args):
         model.train()
         epoch_start = time.time()
         for itr, (views_s1, views_s2, labels) in enumerate(data_loader):
-
             # images1, images2: [B, C, H, W]
             views_s1 = views_s1.to(device, non_blocking=True)
             views_s2 = views_s2.to(device, non_blocking=True)
-            labels = labels.float().to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
 
             optimizer.zero_grad()
 
