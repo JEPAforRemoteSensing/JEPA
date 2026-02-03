@@ -96,4 +96,29 @@ class LeJEPADataset(MultiChannelDataset):
         views_s1 = torch.stack([self.transform_s1(mc_img_c_h_w1) for _ in range(self.V)])
         views_s2 = torch.stack([self.transform_s2(mc_img_c_h_w2) for _ in range(self.V)])
         return views_s1, views_s2, torch.tensor(labels, dtype=float)
+    
+class XJEPADataset(MultiChannelDataset):
+    def __init__(self, root1, root2, metadata, split, transform_s1, transform_s2):
+        super().__init__(root1, root2, metadata, split)
+        self.transform_s1 = transform_s1
+        self.transform_s2 = transform_s2
 
+    def __getitem__(self, idx):
+        mc_img_c_h_w1 = torch.from_numpy(tifffile.imread(f"{os.path.join(self.data_path1, self.metadata1[idx])}.tif")).float()
+        mc_img_c_h_w2 = torch.from_numpy(tifffile.imread(f"{os.path.join(self.data_path2, self.metadata2[idx])}.tif")).float()
+
+        s1_min = torch.tensor([-40, -30], dtype=torch.float32).view(-1, 1, 1)
+        s1_max = torch.tensor([-1.03, 6.72], dtype=torch.float32).view(-1, 1, 1)
+        s2_min = torch.tensor([0], dtype=torch.float32).view(-1, 1, 1)
+        s2_max = torch.tensor([3500, 4000, 4300, 4300, 5000, 6000, 6600, 5400, 5200, 6300], dtype=torch.float32).view(-1, 1, 1)
+
+        mc_img_c_h_w1 = torch.clamp(mc_img_c_h_w1, min=s1_min, max=s1_max)
+        mc_img_c_h_w2 = torch.clamp(mc_img_c_h_w2, min=s2_min, max=s2_max)
+        
+        mc_img_c_h_w1 = (mc_img_c_h_w1 - s1_min) / (s1_max - s1_min)
+        mc_img_c_h_w2 = (mc_img_c_h_w2 - s2_min) / (s2_max - s2_min)
+
+        labels = self.metadata[self.metadata['s1_name'] == self.metadata1[idx]].iloc[0]["one_hot_labels"]
+        view_s1 = self.transform_s1(mc_img_c_h_w1)
+        view_s2 = self.transform_s2(mc_img_c_h_w2) 
+        return view_s1, view_s2, torch.tensor(labels, dtype=float)
