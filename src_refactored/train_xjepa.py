@@ -12,6 +12,7 @@ from masks import EvalCollator
 from torch.amp import GradScaler, autocast
 from data_loading import XJEPADataset, MultiChannelDataset
 from transforms import make_transforms, make_transforms_test
+from masks import RandomMaskCollator
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, SequentialLR
 import torch.nn.functional as F
 
@@ -55,7 +56,7 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=4)
     
     # Training
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=2)
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--lr', type=float, default=2e-3)
     parser.add_argument('--weight_decay', type=float, default=0.05)
@@ -66,7 +67,8 @@ def parse_args():
     parser.add_argument('--sim_coeff', type=float, default=25.0, help='VICReg similarity coefficient')
     parser.add_argument('--std_coeff', type=float, default=25.0, help='VICReg std coefficient')
     parser.add_argument('--cov_coeff', type=float, default=1.0, help='VICReg cov coefficient')
-    
+    parser.add_argument('--ema', type=float, nargs=2, default=[0.996, 1.0])
+
     # Logging/Saving
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
@@ -117,7 +119,7 @@ def main(args):
     transform_s2 = make_transforms(args.in_chans2, 120)
     train_dataset = XJEPADataset(args.data_root1, args.data_root2, metadata=args.metadata, split='train', transform_s1=transform_s1, transform_s2=transform_s2)
     
-    data_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    data_loader = torch.utils.data.DataLoader(train_dataset, collate_fn=RandomMaskCollator(),batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
     
     # Prepare validation data
     test_transform = make_transforms_test(12, 120)
@@ -133,7 +135,7 @@ def main(args):
     model = XJEPA(
         in_chans1=args.in_chans1,
         in_chans2=args.in_chans2,
-        patch_size=16,
+        patch_size=15,
         img_size=120,
     ).to(device)
 
@@ -175,21 +177,23 @@ def main(args):
 
         model.train()
         epoch_start = time.time()
-        for itr, (view_s1, view_s2, labels) in enumerate(data_loader):
+        for itr, (view_s1, view_s2, masks_enc, masks_pred, labels) in enumerate(data_loader):
             # images1, images2: [B, C, H, W]
             view_s1 = view_s1.to(device, non_blocking=True)
             view_s2 = view_s2.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
+            masks_enc = [m.to(device, non_blocking=True) for m in masks_enc]
+            masks_pred = [m.to(device, non_blocking=True) for m in masks_pred]
 
             optimizer.zero_grad()
 
             # Forward pass
             with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
 
-                z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(view_s1, view_s2)
+                z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(view_s1, view_s2, masks_enc, masks_pred)
                 l2_loss = F.mse_loss(z_tgt1_pred, z_tgt2_pred)
-                vic1_loss = loss_fn(z_ctx1, z_tgt1)
-                vic2_loss = loss_fn(z_ctx2, z_tgt2)
+                vic1_loss = loss_fn(z_ctx1.flatten(start_dim=1), z_tgt1.flatten(start_dim=1))
+                vic2_loss = loss_fn(z_ctx2.flatten(start_dim=1), z_tgt2.flatten(start_dim=1))
                 loss = l2_loss + vic1_loss + vic2_loss
             
             # Backward pass

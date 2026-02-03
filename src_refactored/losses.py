@@ -64,7 +64,7 @@ class VICReg(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.num_features = int(args.mlp.split("-")[-1])
+        self.num_features = 768
         # self.backbone, self.embedding = resnet.__dict__[args.arch](
         #     zero_init_residual=True
         # )
@@ -76,8 +76,7 @@ class VICReg(nn.Module):
 
         repr_loss = F.mse_loss(x, y)
 
-        x = torch.cat(FullGatherLayer.apply(x), dim=0)
-        y = torch.cat(FullGatherLayer.apply(y), dim=0)
+        print(x.shape)
         x = x - x.mean(dim=0)
         y = y - y.mean(dim=0)
 
@@ -97,25 +96,6 @@ class VICReg(nn.Module):
             + self.args.cov_coeff * cov_loss
         )
         return loss
-    
-
-class FullGatherLayer(torch.autograd.Function):
-    """
-    Gather tensors from all process and support backward propagation
-    for the gradients across processes.
-    """
-
-    @staticmethod
-    def forward(ctx, x):
-        output = [torch.zeros_like(x) for _ in range(dist.get_world_size())]
-        dist.all_gather(output, x)
-        return tuple(output)
-
-    @staticmethod
-    def backward(ctx, *grads):
-        all_gradients = torch.stack(grads)
-        dist.all_reduce(all_gradients)
-        return all_gradients[dist.get_rank()]
 
 
 def off_diagonal(x):
