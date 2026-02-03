@@ -133,6 +133,8 @@ def main(args):
     model = XJEPA(
         in_chans1=args.in_chans1,
         in_chans2=args.in_chans2,
+        patch_size=16,
+        img_size=120,
     ).to(device)
 
     if args.compile:
