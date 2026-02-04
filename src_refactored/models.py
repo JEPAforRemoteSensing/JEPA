@@ -49,11 +49,11 @@ class XJEPA(nn.Module):
             return z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred
         
         else:
-            full_img_mask = torch.arange(0, 196, device=images1.device)
-            z_emb1 = self.tgtencoder1(images1, full_img_mask)
-            z_emb2 = self.tgtencoder2(images2, full_img_mask)
+            full_img_mask = torch.arange(0, 64, device=images1.device)
+            z_emb1 = self.ctxencoder1(images1, full_img_mask)
+            z_emb2 = self.ctxencoder2(images2, full_img_mask)
 
-            return z_emb1, z_emb2
+            return torch.cat([z_emb1, z_emb2], dim=1)
 
 class MEMPJepa(nn.Module):
     def __init__(self, in_chans1, in_chans2, patch_size, img_size):

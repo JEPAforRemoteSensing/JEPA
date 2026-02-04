@@ -64,7 +64,7 @@ class VICReg(nn.Module):
     def __init__(self, args):
         super().__init__()
         self.args = args
-        self.num_features = 768
+        self.num_features = 13824
         # self.backbone, self.embedding = resnet.__dict__[args.arch](
         #     zero_init_residual=True
         # )
@@ -76,7 +76,6 @@ class VICReg(nn.Module):
 
         repr_loss = F.mse_loss(x, y)
 
-        print(x.shape)
         x = x - x.mean(dim=0)
         y = y - y.mean(dim=0)
 

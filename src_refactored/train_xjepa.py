@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=4)
     
     # Training
-    parser.add_argument('--batch_size', type=int, default=2)
+    parser.add_argument('--batch_size', type=int, default=2048)
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--lr', type=float, default=2e-3)
     parser.add_argument('--weight_decay', type=float, default=0.05)
@@ -73,14 +73,14 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--log_freq', type=int, default=10)
     parser.add_argument('--save_freq', type=int, default=20)
-    parser.add_argument('--eval_freq', type=int, default=5)
+    parser.add_argument('--eval_freq', type=int, default=1)
     parser.add_argument('--top_k', type=int, default=5)
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume training from')
     
     # Weights & Biases
     parser.add_argument('--wandb_enabled', action='store_true', help='Enable wandb logging')
     parser.add_argument('--wandb_project', type=str, default='ijepa', help='Wandb project name')
-    parser.add_argument('--wandb_run_name', type=str, default=None, help='Wandb run name')
+    parser.add_argument('--wandb_run_name', type=str, default='xjepa', help='Wandb run name')
     
     return parser.parse_args()
 
@@ -126,8 +126,8 @@ def main(args):
     test_collate_fn = EvalCollator()
     test_dataset = MultiChannelDataset(args.data_root1, args.data_root2, metadata=args.metadata, split='test', transform=test_transform)
     val_dataset = MultiChannelDataset(args.data_root1, args.data_root2, metadata=args.metadata, split='validation', transform=test_transform)
-    test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=test_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
-    val_data_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=test_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=None, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    val_data_loader = torch.utils.data.DataLoader(val_dataset, batch_size=2048, shuffle=False, num_workers=args.num_workers, collate_fn=None, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
 
     iterations_per_epoch = len(data_loader)
 
@@ -236,7 +236,7 @@ def main(args):
         })
 
         # Eval
-        if epoch % args.eval_freq == 0 or epoch == args.epochs:
+        if False:
             model.eval()
             val_embs1, val_embs2, val_idxs = [], [], []
 
@@ -245,12 +245,16 @@ def main(args):
                 for images1, images2, idxs in val_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
+                    print(images1.shape)
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                         yhat = model(images1, images2)
-                        yhat_s1 = yhat[:args.batch_size]
-                        yhat_s2 = yhat[args.batch_size:]
-                    val_embs1.append(yhat_s1)
-                    val_embs2.append(yhat_s2)
+                        print(yhat.shape)
+                        yhat_s1 = yhat[:images1.shape[0]]
+                        yhat_s2 = yhat[images1.shape[0]:]
+                        print(yhat_s1.shape)
+                        print(yhat_s2.shape)
+                    val_embs1.append(yhat_s1.mean(dim=1))
+                    val_embs2.append(yhat_s2.mean(dim=1))
                     val_idxs.append(idxs)
                 
                 val_embs1 = torch.cat(val_embs1)
@@ -275,10 +279,9 @@ def main(args):
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                        qhat = model(images1, images2)
-                        qhat_s1 = qhat[:args.batch_size]
-                        qhat_s2 = qhat[args.batch_size:]
-
+                        qhat_s1, qhat_s2 = model(images1, images2)
+                    qhat_s1=qhat_s1.mean(dim=1)
+                    qhat_s2=qhat_s2.mean(dim=1)
                     # Cosine similarity and top-k for all 4 combinations
                     # [B, k] tensor of indices
                     topk_s1s1 = (qhat_s1 @ val_embs1.T).topk(args.top_k, dim=-1).indices
