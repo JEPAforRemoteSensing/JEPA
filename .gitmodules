@@ -1,0 +1,3 @@
+[submodule "src_ebjepa/eb_jepa"]
+	path = src_ebjepa/eb_jepa
+	url = https://github.com/facebookresearch/eb_jepa
