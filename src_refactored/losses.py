@@ -47,15 +47,15 @@ class LeJEPALoss(nn.Module):
         self.register_buffer("weights", weights * window)
 
     def forward(self, proj, yhat, y_rep):
-        A = torch.randn(proj.size(-1), 512, device=proj.device)
-        A = A.div_(A.norm(p=2, dim=0))
+        A = torch.randn(proj.size(-1), 512, device=proj.device, dtype=proj.dtype)
+        A = A.div_(A.norm(p=2, dim=0, keepdim=True))
         x_t = (proj @ A).unsqueeze(-1) * self.t
         err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()
         statistic = (err @ self.weights) * proj.size(-2)
         
         sigreg_loss = statistic.mean()
         inv_loss = (proj.mean(0) - proj).square().mean()
-        probe_loss = F.binary_cross_entropy_with_logits(yhat, y_rep)
+        probe_loss = F.binary_cross_entropy_with_logits(yhat, y_rep.float())
 
         return sigreg_loss, inv_loss, probe_loss
 

@@ -5,7 +5,6 @@ import torch
 import wandb
 import logging
 import argparse
-import numpy as np
 from models import MMLeJEPA
 from losses import LeJEPALoss
 from masks import EvalCollator
@@ -20,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 def load_checkpoint(checkpoint_path, model, optimizer=None, scheduler=None, device='cpu'):
     logger.info(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Load to CPU first to avoid MPS float64 issues
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     
     model.load_state_dict(checkpoint['model'])
     logger.info("Loaded model weights")
@@ -135,11 +135,18 @@ def main(args):
         model.compile(mode="reduce-overhead")
     
     # Define loss, optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Separate encoder and probe parameters with different learning rates and weight decay
+    encoder_params = list(model.encoder1.parameters()) + list(model.encoder2.parameters()) + \
+                     list(model.proj1.parameters()) + list(model.proj2.parameters())
+    probe_params = list(model.probe.parameters())
+    
+    g1 = {"params": encoder_params, "lr": args.lr, "weight_decay": 5e-2}
+    g2 = {"params": probe_params, "lr": 1e-3, "weight_decay": 1e-7}
+    optimizer = torch.optim.AdamW([g1, g2])
     warmup_steps = len(data_loader)
     total_steps = len(data_loader) * args.epochs
     s1 = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_steps)
-    s2 = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps, eta_min=1e-3)
+    s2 = CosineAnnealingLR(optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=1e-3)
     scheduler = SequentialLR(optimizer, schedulers=[s1, s2], milestones=[warmup_steps])
 
     loss_fn = LeJEPALoss().to(device)
@@ -220,10 +227,11 @@ def main(args):
                 for images1, images2, idxs in val_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
+                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                         yhat = model(images1, images2)
-                        yhat_s1 = yhat[:args.batch_size]
-                        yhat_s2 = yhat[args.batch_size:]
+                        yhat_s1 = yhat[:actual_bs].clone()
+                        yhat_s2 = yhat[actual_bs:].clone()
                     val_embs1.append(yhat_s1)
                     val_embs2.append(yhat_s2)
                     val_idxs.append(idxs)
@@ -249,10 +257,11 @@ def main(args):
                 for images1, images2, q_idxs in test_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
+                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                         qhat = model(images1, images2)
-                        qhat_s1 = qhat[:args.batch_size]
-                        qhat_s2 = qhat[args.batch_size:]
+                        qhat_s1 = qhat[:actual_bs].clone()
+                        qhat_s2 = qhat[actual_bs:].clone()
 
                     # Cosine similarity and top-k for all 4 combinations
                     # [B, k] tensor of indices

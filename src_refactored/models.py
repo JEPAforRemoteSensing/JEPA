@@ -83,11 +83,12 @@ class MMLeJEPA(nn.Module):
             N, V = s1.shape[:2]
             emb1 = self.encoder1(s1.flatten(0, 1))
             emb2 = self.encoder2(s2.flatten(0, 1))
-            yhat = self.probe(torch.cat([emb1, emb2]).detach())
+            # Detach embeddings so probe doesn't affect encoder training
+            yhat = self.probe(torch.cat([emb1.detach(), emb2.detach()]))
             return yhat, self.proj1(emb1).reshape(N, V, -1).transpose(0, 1), self.proj2(emb2).reshape(N, V, -1).transpose(0, 1)
         else:
             # Eval: (N, C, H, W)
             emb1 = self.encoder1(s1)
             emb2 = self.encoder2(s2)
-            yhat = self.probe(torch.cat([emb1, emb2]))
+            yhat = self.probe(torch.cat([emb1, emb2]).clone())
             return yhat
