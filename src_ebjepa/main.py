@@ -48,12 +48,14 @@ from eb_jepa.training_utils import (
     setup_seed,
     setup_wandb,
 )
-from examples.image_jepa.dataset import (
-    ImageDataset,
-    get_train_transforms,
-    get_val_transforms,
-)
-from examples.image_jepa.eval import LinearProbe, evaluate_linear_probe
+# from examples.image_jepa.dataset import (
+#     ImageDataset,
+#     get_train_transforms,
+#     get_val_transforms,
+# )
+from eval import LinearProbe, evaluate_linear_probe, get_multilabel_metrics
+from data_loading import MultiChannelDataset, LeJEPADataset
+from transforms import make_transforms, make_transforms_test
 
 logger = get_logger(__name__)
 
@@ -61,12 +63,12 @@ logger = get_logger(__name__)
 class ResNet18(nn.Module):
     """ResNet-18 backbone implementation."""
 
-    def __init__(self):
+    def __init__(self, in_channels=10):
         super().__init__()
         self.backbone = torchvision.models.resnet18()
         self.backbone.fc = nn.Identity()  # Remove final classification layer
         self.backbone.conv1 = nn.Conv2d(
-            3, 64, kernel_size=3, stride=1, padding=2, bias=False
+            in_channels, 64, kernel_size=3, stride=1, padding=2, bias=False
         )
         self.backbone.maxpool = nn.Identity()
         self.features_dim = 512
@@ -268,14 +270,11 @@ def train_epoch(
     # Dynamic loss accumulator
     loss_totals = {}
     total_linear_loss = 0
-    linear_correct = 0
-    linear_total = 0
+    linear_metrics_totals = None
 
     pbar = tqdm(train_loader, desc=f"Epoch {epoch}", disable=tqdm_silent)
-    for batch_idx, (views, target) in enumerate(pbar):
-        view1, view2 = views[0].to(device, non_blocking=True), views[1].to(
-            device, non_blocking=True
-        )
+    for batch_idx, (views_s1, views_s2, target) in enumerate(pbar):
+        view1, view2 = views_s2[0].to(device, non_blocking=True), views_s2[1].to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
 
         with autocast(device.type, enabled=use_amp, dtype=dtype):
@@ -288,10 +287,7 @@ def train_epoch(
             features_frozen = features.detach().float()
 
         linear_outputs = linear_probe(features_frozen)
-        linear_loss = F.cross_entropy(linear_outputs, target)
-
-        _, predicted = linear_outputs.max(1)
-        linear_correct_batch = predicted.eq(target).sum().item()
+        linear_loss = F.binary_cross_entropy_with_logits(linear_outputs, target.float())
 
         total_loss_batch = loss + linear_loss
 
@@ -300,23 +296,26 @@ def train_epoch(
         scaler.step(optimizer)
         scaler.update()
 
-        # Update metrics dynamically based on loss_dict keys
+        # Update metrics
+        with torch.no_grad():
+            batch_metrics = get_multilabel_metrics(linear_outputs, target)
+            if linear_metrics_totals is None:
+                linear_metrics_totals = {k: 0.0 for k in batch_metrics.keys()}
+            for k, v in batch_metrics.items():
+                linear_metrics_totals[k] += v
+
         for key, value in loss_dict.items():
             if key not in loss_totals:
                 loss_totals[key] = 0
             loss_totals[key] += value.item()
         total_linear_loss += linear_loss.item()
 
-        # Update linear probe accuracy (pre-computed under autocast)
-        linear_total += target.size(0)
-        linear_correct += linear_correct_batch
-
         # Update progress bar
         pbar.set_postfix(
             {
                 "Loss": f"{loss.item():.4f}",
                 "Linear": f"{linear_loss.item():.4f}",
-                "Acc": f"{100.*linear_correct/linear_total:.2f}%",
+                "F1": f"{batch_metrics['f1']:.4f}",
             }
         )
 
@@ -327,13 +326,14 @@ def train_epoch(
     num_batches = len(train_loader)
     metrics = {key: total / num_batches for key, total in loss_totals.items()}
     metrics["linear_loss"] = total_linear_loss / num_batches
-    metrics["linear_acc"] = 100.0 * linear_correct / linear_total
+    for k, v in linear_metrics_totals.items():
+        metrics[f"linear_{k}"] = v / num_batches
 
     return metrics
 
 
 def run(
-    fname: str = "examples/image_jepa/cfgs/default.yaml",
+    fname: str = "src_ebjepa/cfgs/default.yaml",
     cfg=None,
     folder=None,
     **overrides,
@@ -388,21 +388,41 @@ def run(
         sweep_id=cfg.logging.get("wandb_sweep_id"),
     )
 
-    logger.info("Loading CIFAR-10 dataset...")
-    transform = get_train_transforms()
+    logger.info("Loading BEN-14K dataset...")
+    transform_s1 = make_transforms(num_channels=cfg.data.num_channels_s1)
+    transform_s2 = make_transforms(num_channels=cfg.data.num_channels_s2)
+    test_transform_combined = make_transforms_test(num_channels=cfg.data.num_channels_s1 + cfg.data.num_channels_s2)
 
     # Use EBJEPA_DSETS environment variable if set, otherwise fall back to config
     data_dir = os.environ.get("EBJEPA_DSETS")
     logger.info(f"Using data directory: {data_dir}")
 
-    base_train_dataset = CIFAR10(
-        root=data_dir, train=True, download=True, transform=None
+    train_dataset = LeJEPADataset(
+        root1=cfg.data.sar_root,
+        root2=cfg.data.ms_root,
+        metadata=cfg.data.metadata,
+        split='train',
+        transform_s1=transform_s1,
+        transform_s2=transform_s2,
+        num_views=2,
     )
 
-    train_dataset = ImageDataset(base_train_dataset, transform, num_crops=2)
+    # train_dataset = ImageDataset(base_train_dataset, transform, num_crops=2)
 
-    val_dataset = CIFAR10(
-        root=data_dir, train=False, download=True, transform=get_val_transforms()
+    val_dataset = MultiChannelDataset(
+        root1=cfg.data.sar_root,
+        root2=cfg.data.ms_root,
+        split='val',
+        transform=test_transform_combined,
+        metadata=cfg.data.metadata,
+    )
+
+    test_dataset = MultiChannelDataset(
+        root1=cfg.data.sar_root,
+        root2=cfg.data.ms_root,
+        split='test',
+        transform=test_transform_combined,
+        metadata=cfg.data.metadata,
     )
 
     train_loader = DataLoader(
@@ -422,8 +442,16 @@ def run(
         pin_memory=True,
     )
 
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=cfg.data.batch_size,
+        shuffle=False,
+        num_workers=cfg.data.num_workers,
+        pin_memory=True,
+    )
+
     log_data_info(
-        "CIFAR-10",
+        "BEN-14K",
         len(train_loader),
         cfg.data.batch_size,
         train_samples=len(train_dataset),
@@ -433,7 +461,7 @@ def run(
     # Initialize model
     logger.info("Initializing model...")
     if cfg.model.type == "resnet":
-        backbone = ResNet18()
+        backbone = ResNet18(cfg.data.num_channels_s2)
         features_dim = backbone.features_dim
     elif cfg.model.type == "vit_s":
         features_dim = 384
@@ -446,6 +474,9 @@ def run(
             mlp_dim=4 * features_dim,
         )
         backbone = VisionTransformer(**model_kwargs)
+        backbone.conv_proj = nn.Conv2d(
+            10, features_dim, kernel_size=8, stride=8
+        )
         backbone.heads = nn.Identity()
     elif cfg.model.type == "vit_b":
         features_dim = 768
@@ -458,6 +489,9 @@ def run(
             mlp_dim=4 * features_dim,
         )
         backbone = VisionTransformer(**model_kwargs)
+        backbone.conv_proj = nn.Conv2d(
+            10, features_dim, kernel_size=8, stride=8
+        )
         backbone.heads = nn.Identity()
 
     model = ImageSSL(
@@ -485,7 +519,7 @@ def run(
     log_config(cfg)
 
     # Initialize linear probe
-    linear_probe = LinearProbe(feature_dim=features_dim, num_classes=10).to(device)
+    linear_probe = LinearProbe(feature_dim=features_dim, num_classes=19).to(device)
 
     # Mixed precision setup
     dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
@@ -554,7 +588,7 @@ def run(
         )
 
         # Evaluate linear probe on validation set
-        val_acc, val_loss = evaluate_linear_probe(
+        val_metrics, val_loss = evaluate_linear_probe(
             model, linear_probe, val_loader, device, use_amp
         )
 
@@ -563,7 +597,8 @@ def run(
         for key, value in train_metrics.items():
             log_dict[f"train_{key}"] = value
         log_dict["val_loss"] = val_loss
-        log_dict["val_acc"] = val_acc
+        for key, value in val_metrics.items():
+            log_dict[f"val_{key}"] = value
         log_dict["learning_rate"] = optimizer.param_groups[0]["lr"]
 
         if wandb_run:
@@ -576,7 +611,7 @@ def run(
                 epoch,
                 {
                     "loss": train_metrics["loss"],
-                    "val_acc": val_acc,
+                    "val_f1": val_metrics["f1"],
                     "lr": optimizer.param_groups[0]["lr"],
                 },
                 total_epochs=cfg.optim.epochs,
@@ -591,7 +626,7 @@ def run(
             epoch=epoch,
             scaler=scaler,
             linear_probe_state_dict=linear_probe.state_dict(),
-            linear_val_acc=val_acc,
+            linear_val_acc=val_metrics["f1"],
         )
         if epoch % cfg.logging.save_every == 0 and epoch > 0:
             save_checkpoint(
@@ -601,7 +636,7 @@ def run(
                 epoch=epoch,
                 scaler=scaler,
                 linear_probe_state_dict=linear_probe.state_dict(),
-                linear_val_acc=val_acc,
+                linear_val_acc=val_metrics["f1"],
             )
 
     logger.info("Training completed!")
