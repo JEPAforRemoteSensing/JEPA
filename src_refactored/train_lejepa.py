@@ -135,7 +135,14 @@ def main(args):
         model.compile(mode="reduce-overhead")
     
     # Define loss, optimizer and scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    # Separate encoder and probe parameters with different learning rates and weight decay
+    encoder_params = list(model.encoder1.parameters()) + list(model.encoder2.parameters()) + \
+                     list(model.proj1.parameters()) + list(model.proj2.parameters())
+    probe_params = list(model.probe.parameters())
+    
+    g1 = {"params": encoder_params, "lr": args.lr, "weight_decay": 5e-2}
+    g2 = {"params": probe_params, "lr": 1e-3, "weight_decay": 1e-7}
+    optimizer = torch.optim.AdamW([g1, g2])
     warmup_steps = len(data_loader)
     total_steps = len(data_loader) * args.epochs
     s1 = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_steps)
@@ -159,56 +166,56 @@ def main(args):
     logger.info("Starting training...")
     for epoch in range(start_epoch, args.epochs + 1):
 
-        model.train()
-        epoch_start = time.time()
-        for itr, (views_s1, views_s2, labels) in enumerate(data_loader):
-            # images1, images2: [B, C, H, W]
-            views_s1 = views_s1.to(device, non_blocking=True)
-            views_s2 = views_s2.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
+        # model.train()
+        # epoch_start = time.time()
+        # for itr, (views_s1, views_s2, labels) in enumerate(data_loader):
+        #     # images1, images2: [B, C, H, W]
+        #     views_s1 = views_s1.to(device, non_blocking=True)
+        #     views_s2 = views_s2.to(device, non_blocking=True)
+        #     labels = labels.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
+        #     optimizer.zero_grad()
 
-            # Forward pass
-            with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+        #     # Forward pass
+        #     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
 
-                yhat, proj1, proj2 = model(views_s1, views_s2)
-                sigreg_loss, inv_loss, probe_loss = loss_fn(torch.cat([proj1, proj2]), yhat, labels.repeat(2*train_dataset.V, 1))
-                sigreg_loss *= args.lamb
-                inv_loss *= args.gamma
+        #         yhat, proj1, proj2 = model(views_s1, views_s2)
+        #         sigreg_loss, inv_loss, probe_loss = loss_fn(torch.cat([proj1, proj2]), yhat, labels.repeat(2*train_dataset.V, 1))
+        #         sigreg_loss *= args.lamb
+        #         inv_loss *= args.gamma
 
-                loss = sigreg_loss + inv_loss + probe_loss
+        #         loss = sigreg_loss + inv_loss + probe_loss
             
-            # Backward pass
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
+        #     # Backward pass
+        #     scaler.scale(loss).backward()
+        #     scaler.step(optimizer)
+        #     scaler.update()
+        #     scheduler.step()
 
-            #Logging
-            if itr % args.log_freq == 0:
-                logger.info(
-                    f'Epoch [{epoch}][{itr}/{len(data_loader)}] '
-                    f'Loss: {loss:.4f} '
-                    f'LR: {scheduler.get_last_lr()[0]:.6f}'
-                )
+        #     #Logging
+        #     if itr % args.log_freq == 0:
+        #         logger.info(
+        #             f'Epoch [{epoch}][{itr}/{len(data_loader)}] '
+        #             f'Loss: {loss:.4f} '
+        #             f'LR: {scheduler.get_last_lr()[0]:.6f}'
+        #         )
                 
-                wandb.log({
-                    'train/loss': loss,
-                    'train/sigreg_loss': sigreg_loss,
-                    'train/inv_loss': inv_loss,
-                    'train/probe_loss': probe_loss,
-                    'train/lr': scheduler.get_last_lr()[0],
-                    'epoch': epoch,
-                })
+        #         wandb.log({
+        #             'train/loss': loss,
+        #             'train/sigreg_loss': sigreg_loss,
+        #             'train/inv_loss': inv_loss,
+        #             'train/probe_loss': probe_loss,
+        #             'train/lr': scheduler.get_last_lr()[0],
+        #             'epoch': epoch,
+        #         })
         
-        epoch_time = time.time() - epoch_start
-        logger.info(f'Epoch {epoch} completed in {epoch_time:.2f}s ({epoch_time/60:.2f}m). Avg Loss: {loss:.4f}')
+        # epoch_time = time.time() - epoch_start
+        # logger.info(f'Epoch {epoch} completed in {epoch_time:.2f}s ({epoch_time/60:.2f}m). Avg Loss: {loss:.4f}')
         
-        wandb.log({
-            'epoch': epoch,
-            'train/epoch_loss': loss,
-        })
+        # wandb.log({
+        #     'epoch': epoch,
+        #     'train/epoch_loss': loss,
+        # })
 
         # Eval
         if epoch % args.eval_freq == 0 or epoch == args.epochs:
@@ -220,10 +227,11 @@ def main(args):
                 for images1, images2, idxs in val_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
+                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                         yhat = model(images1, images2)
-                        yhat_s1 = yhat[:args.batch_size]
-                        yhat_s2 = yhat[args.batch_size:]
+                        yhat_s1 = yhat[:actual_bs].clone()
+                        yhat_s2 = yhat[actual_bs:].clone()
                     val_embs1.append(yhat_s1)
                     val_embs2.append(yhat_s2)
                     val_idxs.append(idxs)
@@ -249,13 +257,15 @@ def main(args):
                 for images1, images2, q_idxs in test_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
+                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                         qhat = model(images1, images2)
-                        qhat_s1 = qhat[:args.batch_size]
-                        qhat_s2 = qhat[args.batch_size:]
+                        qhat_s1 = qhat[:actual_bs].clone()
+                        qhat_s2 = qhat[actual_bs:].clone()
 
                     # Cosine similarity and top-k for all 4 combinations
                     # [B, k] tensor of indices
+                    print(qhat_s1.shape, val_embs1.T.shape)
                     topk_s1s1 = (qhat_s1 @ val_embs1.T).topk(args.top_k, dim=-1).indices
                     topk_s2s2 = (qhat_s2 @ val_embs2.T).topk(args.top_k, dim=-1).indices
                     topk_s1s2 = (qhat_s1 @ val_embs2.T).topk(args.top_k, dim=-1).indices

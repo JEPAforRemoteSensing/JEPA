@@ -80,7 +80,7 @@ def parse_args():
     # Weights & Biases
     parser.add_argument('--wandb_enabled', action='store_true', help='Enable wandb logging')
     parser.add_argument('--wandb_project', type=str, default='ijepa', help='Wandb project name')
-    parser.add_argument('--wandb_run_name', type=str, default='xjepa', help='Wandb run name')
+    parser.add_argument('--wandb_run_name', type=str, default='xjepa_fig', help='Wandb run name')
     
     return parser.parse_args()
 
@@ -126,8 +126,8 @@ def main(args):
     test_collate_fn = EvalCollator()
     test_dataset = MultiChannelDataset(args.data_root1, args.data_root2, metadata=args.metadata, split='test', transform=test_transform)
     val_dataset = MultiChannelDataset(args.data_root1, args.data_root2, metadata=args.metadata, split='validation', transform=test_transform)
-    test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=None, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
-    val_data_loader = torch.utils.data.DataLoader(val_dataset, batch_size=2048, shuffle=False, num_workers=args.num_workers, collate_fn=None, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=test_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    val_data_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=test_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
 
     iterations_per_epoch = len(data_loader)
 
@@ -174,7 +174,6 @@ def main(args):
     # Training loop
     logger.info("Starting training...")
     for epoch in range(start_epoch, args.epochs + 1):
-
         model.train()
         epoch_start = time.time()
         for itr, (view_s1, view_s2, masks_enc, masks_pred, labels) in enumerate(data_loader):
@@ -191,10 +190,10 @@ def main(args):
             with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
 
                 z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred = model(view_s1, view_s2, masks_enc, masks_pred)
-                l2_loss = F.mse_loss(z_tgt1_pred, z_tgt2_pred)
-                vic1_loss = loss_fn(z_ctx1.flatten(start_dim=1), z_tgt1.flatten(start_dim=1))
-                vic2_loss = loss_fn(z_ctx2.flatten(start_dim=1), z_tgt2.flatten(start_dim=1))
-                loss = l2_loss + vic1_loss + vic2_loss
+                l2_loss = F.mse_loss(z_tgt1, z_tgt2_pred) + F.mse_loss(z_tgt2, z_tgt1_pred)
+                vic_loss = loss_fn(z_ctx1.mean(dim=1), z_ctx2.mean(dim=1))
+                # vic2_loss = loss_fn(z_ctx2.mean(dim=1), z_tgt2.mean(dim=1))
+                loss = l2_loss + vic_loss
             
             # Backward pass
             scaler.scale(loss).backward()
@@ -220,8 +219,7 @@ def main(args):
                 
                 wandb.log({
                     'train/loss': loss,
-                    'train/vic1_loss': vic1_loss,
-                    'train/vic2_loss': vic2_loss,
+                    'train/vic_loss': vic_loss,
                     'train/l2_loss': l2_loss,
                     'train/lr': scheduler.get_last_lr()[0],
                     'epoch': epoch,
@@ -236,7 +234,7 @@ def main(args):
         })
 
         # Eval
-        if False:
+        if epoch % args.eval_freq == 0 or epoch == args.epochs:
             model.eval()
             val_embs1, val_embs2, val_idxs = [], [], []
 
@@ -245,14 +243,11 @@ def main(args):
                 for images1, images2, idxs in val_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
-                    print(images1.shape)
+                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                         yhat = model(images1, images2)
-                        print(yhat.shape)
-                        yhat_s1 = yhat[:images1.shape[0]]
-                        yhat_s2 = yhat[images1.shape[0]:]
-                        print(yhat_s1.shape)
-                        print(yhat_s2.shape)
+                        yhat_s1 = yhat[:actual_bs].clone()
+                        yhat_s2 = yhat[actual_bs:].clone()
                     val_embs1.append(yhat_s1.mean(dim=1))
                     val_embs2.append(yhat_s2.mean(dim=1))
                     val_idxs.append(idxs)
@@ -278,12 +273,17 @@ def main(args):
                 for images1, images2, q_idxs in test_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
+                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                        qhat_s1, qhat_s2 = model(images1, images2)
-                    qhat_s1=qhat_s1.mean(dim=1)
-                    qhat_s2=qhat_s2.mean(dim=1)
+                        qhat = model(images1, images2)
+                        qhat_s1 = qhat[:actual_bs].clone().mean(dim=1)
+                        qhat_s2 = qhat[actual_bs:].clone().mean(dim=1)
+                        print(actual_bs, qhat_s1.shape, qhat_s2.shape, qhat.shape)
                     # Cosine similarity and top-k for all 4 combinations
                     # [B, k] tensor of indices
+                    
+                    print(qhat_s1.shape, val_embs1.T.shape)
+                    # qhat 2048, 64, 768; 768, 64, 3255 -> 2048, 3255 -> 2048, k
                     topk_s1s1 = (qhat_s1 @ val_embs1.T).topk(args.top_k, dim=-1).indices
                     topk_s2s2 = (qhat_s2 @ val_embs2.T).topk(args.top_k, dim=-1).indices
                     topk_s1s2 = (qhat_s1 @ val_embs2.T).topk(args.top_k, dim=-1).indices
@@ -314,7 +314,7 @@ def main(args):
                 wandb.log({f'eval/{m}_{k}': v for m in metrics for k, v in metrics[m].items() if k == 'f1'} | {'epoch': epoch})
 
         model.train()
-        # Save checkpoint
+        #Save checkpoint
         if epoch % args.save_freq == 0 or epoch == args.epochs:
             checkpoint = {
                 'epoch': epoch,

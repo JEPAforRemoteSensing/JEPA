@@ -21,7 +21,7 @@ class MEMPLoss(nn.Module):
 
     def forward(self, z_ctx1, z_ctx2, z_tgt1, z_tgt2, z_tgt1_pred, z_tgt2_pred):
         proj = torch.cat([z_ctx1.unsqueeze(0), z_ctx2.unsqueeze(0), z_tgt1.unsqueeze(0), z_tgt2.unsqueeze(0)], dim=0)
-        A = torch.randn(proj.size(-1), 256, device=proj.device)
+        A = torch.randn(proj.size(-1), 1024, device=proj.device)
         A = A.div_(A.norm(p=2, dim=0))
         x_t = (proj @ A).unsqueeze(-1) * self.t
         err = (x_t.cos().mean(-3) - self.phi).square() + x_t.sin().mean(-3).square()

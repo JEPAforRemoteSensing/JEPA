@@ -70,7 +70,7 @@ class MultiChannelDataset(torch.utils.data.Dataset):
         return fig
 
 class LeJEPADataset(MultiChannelDataset):
-    def __init__(self, root1, root2, metadata, split, transform_s1, transform_s2, num_views=4):
+    def __init__(self, root1, root2, metadata, split, transform_s1, transform_s2, num_views=8):
         super().__init__(root1, root2, metadata, split)
         self.transform_s1 = transform_s1
         self.transform_s2 = transform_s2
