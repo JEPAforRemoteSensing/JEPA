@@ -52,25 +52,25 @@ class MEMPJepa(nn.Module):
             return z_emb1, z_emb2
 
 class MMLeJEPA(nn.Module):
-    def __init__(self, in_chans1, in_chans2, proj_dim=768, embed_dim=1024):
+    def __init__(self, in_chans1, in_chans2, proj_dim=64, embed_dim=1024):
         """Multi-modal LeJEPA Architecture"""
         super().__init__()
         self.encoder1 = timm.create_model(
-            'vit_base_patch8_224',
+            'resnetv2_50',#'vit_base_patch16_224'
             pretrained=False,
             num_classes=embed_dim,
-            drop_path_rate=0.1,
-            img_size=120,
+            # drop_path_rate=0.1,
+            # img_size=120,
             in_chans=in_chans1
         )
         self.proj1 = MLP(embed_dim, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
 
         self.encoder2 = timm.create_model(
-            'vit_base_patch8_224',
+            'resnetv2_50',
             pretrained=False,
             num_classes=embed_dim,
-            drop_path_rate=0.1,
-            img_size=120,
+            # drop_path_rate=0.1,
+            # img_size=120,
             in_chans=in_chans2
         )
         self.proj2 = MLP(embed_dim, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
@@ -91,4 +91,4 @@ class MMLeJEPA(nn.Module):
             emb1 = self.encoder1(s1)
             emb2 = self.encoder2(s2)
             yhat = self.probe(torch.cat([emb1, emb2]).clone())
-            return yhat
+            return emb1, emb2, yhat

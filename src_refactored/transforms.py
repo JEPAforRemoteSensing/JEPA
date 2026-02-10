@@ -30,7 +30,7 @@ def make_transforms_test(
 def make_transforms(
     num_channels,
     crop_size=96,
-    crop_scale=(0.8, 1.0),
+    crop_scale=(0.4, 1.0),
     horizontal_flip=True,
     vertical_flip=True,
     gaussian_blur=True,

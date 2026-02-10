@@ -115,23 +115,20 @@ def main(args):
 
     with torch.inference_mode():
         logger.info("Building retrieval index from validation set...")
-        # Build retrieval index from validation set
+        # Build retrieval index from validation set using encoder embeddings
         for images1, images2, idxs in val_data_loader:
             images1 = images1.to(device, non_blocking=True)
             images2 = images2.to(device, non_blocking=True)
-            actual_bs = images1.shape[0]
             with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                yhat = model(images1, images2)
-                yhat_s1 = yhat[:actual_bs].clone()
-                yhat_s2 = yhat[actual_bs:].clone()
-            val_embs1.append(yhat_s1)
-            val_embs2.append(yhat_s2)
+                emb1, emb2, _ = model(images1, images2)
+            val_embs1.append(emb1)
+            val_embs2.append(emb2)
             val_idxs.append(idxs)
         
-        val_embs1 = torch.cat(val_embs1)
-        val_embs2 = torch.cat(val_embs2)
+        val_embs1 = torch.nn.functional.normalize(torch.cat(val_embs1), dim=-1)
+        val_embs2 = torch.nn.functional.normalize(torch.cat(val_embs2), dim=-1)
         val_idxs = torch.cat(val_idxs)
-        logger.info(f"Built index with {val_embs1.shape[0]} validation samples")
+        logger.info(f"Built index with {val_embs1.shape[0]} validation samples, emb_dim={val_embs1.shape[1]}")
 
         # Get labels for validation set
         val_meta = val_dataset.metadata[val_dataset.metadata['split'] == 'validation']
@@ -162,18 +159,19 @@ def main(args):
             images2 = images2.to(device, non_blocking=True)
             actual_bs = images1.shape[0]
             with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                qhat = model(images1, images2)
-                qhat_s1 = qhat[:actual_bs].clone()
-                qhat_s2 = qhat[actual_bs:].clone()
+                emb1, emb2, yhat = model(images1, images2)
+            qhat_s1 = torch.nn.functional.normalize(emb1, dim=-1)
+            qhat_s2 = torch.nn.functional.normalize(emb2, dim=-1)
 
             # Get predictions and ground truth for classification metrics
-            preds = (qhat_s1.sigmoid() > 0.5).cpu()
+            # Use probe logits (first half = from S1 encoder) for classification
+            preds = (yhat[:actual_bs].sigmoid() > 0.5).cpu()
             for idx in q_idxs:
                 gt_labels = torch.tensor(test_meta[test_meta['s1_name'] == test_dataset.metadata1[idx.item()]]['one_hot_labels'].iloc[0], dtype=torch.float32)
                 all_labels.append(gt_labels)
             all_predictions.append(preds)
 
-            # Cosine similarity and top-k for all 4 combinations
+            # Cosine similarity on L2-normalized embeddings, top-k for all 4 combinations
             # [B, k] tensor of indices
             topk_s1s1 = (qhat_s1 @ val_embs1.T).topk(args.top_k, dim=-1).indices
             topk_s2s2 = (qhat_s2 @ val_embs2.T).topk(args.top_k, dim=-1).indices

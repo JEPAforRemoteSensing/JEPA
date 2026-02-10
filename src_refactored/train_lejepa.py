@@ -59,9 +59,14 @@ def parse_args():
     parser.add_argument('--lr', type=float, default=2e-3)
     parser.add_argument('--weight_decay', type=float, default=0.05)
     parser.add_argument('--use_amp', action='store_true')
-    parser.add_argument('--lamb', type=float, default=0.02, help='Weight for SIGReg loss')
-    parser.add_argument('--gamma', type=float, default=0.08, help='Weight for invariance loss')
+    parser.add_argument('--lamb', type=float, default=0.05, help='Single trade-off: SIGReg*lamb + invariance*(1-lamb)')
     parser.add_argument('--compile', action='store_true')
+    
+    # ASL Loss parameters
+    parser.add_argument('--use_asl', action='store_true', help='Use Asymmetric Loss instead of BCE for probe')
+    parser.add_argument('--asl_gamma_neg', type=float, default=4, help='ASL focusing parameter for negative samples')
+    parser.add_argument('--asl_gamma_pos', type=float, default=0, help='ASL focusing parameter for positive samples')
+    parser.add_argument('--asl_clip', type=float, default=0.05, help='ASL probability clipping margin')
     
     # Logging/Saving
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
@@ -146,10 +151,15 @@ def main(args):
     warmup_steps = len(data_loader)
     total_steps = len(data_loader) * args.epochs
     s1 = LinearLR(optimizer, start_factor=0.01, total_iters=warmup_steps)
-    s2 = CosineAnnealingLR(optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=1e-3)
+    s2 = CosineAnnealingLR(optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=args.lr / 1000)
     scheduler = SequentialLR(optimizer, schedulers=[s1, s2], milestones=[warmup_steps])
 
-    loss_fn = LeJEPALoss().to(device)
+    loss_fn = LeJEPALoss(
+        use_asl=args.use_asl,
+        gamma_neg=args.asl_gamma_neg,
+        gamma_pos=args.asl_gamma_pos,
+        clip=args.asl_clip
+    ).to(device)
     if args.compile:
         loss_fn.compile(mode="reduce-overhead")
 
@@ -181,10 +191,9 @@ def main(args):
 
                 yhat, proj1, proj2 = model(views_s1, views_s2)
                 sigreg_loss, inv_loss, probe_loss = loss_fn(torch.cat([proj1, proj2]), yhat, labels.repeat(2*train_dataset.V, 1))
-                sigreg_loss *= args.lamb
-                inv_loss *= args.gamma
+                lejepa_loss = sigreg_loss * args.lamb + inv_loss * (1 - args.lamb)
 
-                loss = sigreg_loss + inv_loss + probe_loss
+                loss = lejepa_loss + probe_loss
             
             # Backward pass
             scaler.scale(loss).backward()
@@ -202,6 +211,7 @@ def main(args):
                 
                 wandb.log({
                     'train/loss': loss,
+                    'train/lejepa_loss': lejepa_loss,
                     'train/sigreg_loss': sigreg_loss,
                     'train/inv_loss': inv_loss,
                     'train/probe_loss': probe_loss,
@@ -227,17 +237,14 @@ def main(args):
                 for images1, images2, idxs in val_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
-                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                        yhat = model(images1, images2)
-                        yhat_s1 = yhat[:actual_bs].clone()
-                        yhat_s2 = yhat[actual_bs:].clone()
-                    val_embs1.append(yhat_s1)
-                    val_embs2.append(yhat_s2)
+                        emb1, emb2, _ = model(images1, images2)
+                    val_embs1.append(emb1)
+                    val_embs2.append(emb2)
                     val_idxs.append(idxs)
                 
-                val_embs1 = torch.cat(val_embs1)
-                val_embs2 = torch.cat(val_embs2)
+                val_embs1 = torch.nn.functional.normalize(torch.cat(val_embs1), dim=-1)
+                val_embs2 = torch.nn.functional.normalize(torch.cat(val_embs2), dim=-1)
                 val_idxs = torch.cat(val_idxs)
 
                 # Get labels for validation set
@@ -257,11 +264,10 @@ def main(args):
                 for images1, images2, q_idxs in test_data_loader:
                     images1 = images1.to(device, non_blocking=True)
                     images2 = images2.to(device, non_blocking=True)
-                    actual_bs = images1.shape[0]
                     with autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                        qhat = model(images1, images2)
-                        qhat_s1 = qhat[:actual_bs].clone()
-                        qhat_s2 = qhat[actual_bs:].clone()
+                        emb1, emb2, _ = model(images1, images2)
+                    qhat_s1 = torch.nn.functional.normalize(emb1, dim=-1)
+                    qhat_s2 = torch.nn.functional.normalize(emb2, dim=-1)
 
                     # Cosine similarity and top-k for all 4 combinations
                     # [B, k] tensor of indices
