@@ -56,7 +56,7 @@ class MMLeJEPA(nn.Module):
         """Multi-modal LeJEPA Architecture"""
         super().__init__()
         self.encoder1 = timm.create_model(
-            'resnetv2_50',#'vit_base_patch16_224'
+            'resnetv2_18',#'vit_base_patch16_224'
             pretrained=False,
             num_classes=embed_dim,
             # drop_path_rate=0.1,
@@ -66,7 +66,7 @@ class MMLeJEPA(nn.Module):
         self.proj1 = MLP(embed_dim, [2048, 2048, proj_dim], norm_layer=nn.BatchNorm1d)
 
         self.encoder2 = timm.create_model(
-            'resnetv2_50',
+            'resnetv2_18',
             pretrained=False,
             num_classes=embed_dim,
             # drop_path_rate=0.1,

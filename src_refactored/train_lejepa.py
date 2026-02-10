@@ -51,7 +51,10 @@ def parse_args():
     parser.add_argument('--data_root1', type=str, default='data/BEN_14k/BigEarthNet-S1')
     parser.add_argument('--data_root2', type=str, default='data/BEN_14k/BigEarthNet-S2')
     parser.add_argument('--metadata', type=str, default='data/BEN_14k/serbia_metadata.parquet')
-    parser.add_argument('--num_workers', type=int, default=4)
+    parser.add_argument('--num_workers', type=int, default=8, help='DataLoader workers. Use CPU count for full speed.')
+    parser.add_argument('--prefetch_factor', type=int, default=8, help='Batches to prefetch per worker')
+    parser.add_argument('--cache_train', action='store_true', help='Cache training data in RAM (requires ~GB of memory)')
+    parser.add_argument('--cache_val', action='store_true', help='Cache validation/test data in RAM')
     
     # Training
     parser.add_argument('--batch_size', type=int, default=64)
@@ -116,17 +119,65 @@ def main(args):
     # Prepare training data
     transform_s1 = make_transforms(args.in_chans1, 120)
     transform_s2 = make_transforms(args.in_chans2, 120)
-    train_dataset = LeJEPADataset(args.data_root1, args.data_root2, metadata=args.metadata, split='train', transform_s1=transform_s1, transform_s2=transform_s2)
+    train_dataset = LeJEPADataset(
+        args.data_root1, args.data_root2, 
+        metadata=args.metadata, 
+        split='train', 
+        transform_s1=transform_s1, 
+        transform_s2=transform_s2,
+        cache_in_memory=args.cache_train
+    )
     
-    data_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True, drop_last=True, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    data_loader = torch.utils.data.DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=True, 
+        num_workers=args.num_workers, 
+        pin_memory=True, 
+        drop_last=True, 
+        persistent_workers=True if args.num_workers > 0 else False, 
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None
+    )
     
     # Prepare validation data
     test_transform = make_transforms_test(12, 120)
     test_collate_fn = EvalCollator()
-    test_dataset = MultiChannelDataset(args.data_root1, args.data_root2, metadata=args.metadata, split='test', transform=test_transform)
-    val_dataset = MultiChannelDataset(args.data_root1, args.data_root2, metadata=args.metadata, split='validation', transform=test_transform)
-    test_data_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=test_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
-    val_data_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=test_collate_fn, pin_memory=True, drop_last=False, persistent_workers=True if args.num_workers > 0 else False, prefetch_factor=4 if args.num_workers > 0 else None)
+    test_dataset = MultiChannelDataset(
+        args.data_root1, args.data_root2, 
+        metadata=args.metadata, 
+        split='test', 
+        transform=test_transform,
+        cache_in_memory=args.cache_val
+    )
+    val_dataset = MultiChannelDataset(
+        args.data_root1, args.data_root2, 
+        metadata=args.metadata, 
+        split='validation', 
+        transform=test_transform,
+        cache_in_memory=args.cache_val
+    )
+    test_data_loader = torch.utils.data.DataLoader(
+        test_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        collate_fn=test_collate_fn, 
+        pin_memory=True, 
+        drop_last=False, 
+        persistent_workers=True if args.num_workers > 0 else False, 
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None
+    )
+    val_data_loader = torch.utils.data.DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=False, 
+        num_workers=args.num_workers, 
+        collate_fn=test_collate_fn, 
+        pin_memory=True, 
+        drop_last=False, 
+        persistent_workers=True if args.num_workers > 0 else False, 
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None
+    )
 
     iterations_per_epoch = len(data_loader)
 
