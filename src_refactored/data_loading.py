@@ -4,7 +4,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-
+from lightning.data import StreamingDataset
 class MultiChannelDataset(torch.utils.data.Dataset):
     def __init__(self, root1, root2, metadata, split, transform=None):
         self.data_path1 = os.path.join(root1, split)
@@ -97,3 +97,22 @@ class LeJEPADataset(MultiChannelDataset):
         views_s2 = torch.stack([self.transform_s2(mc_img_c_h_w2) for _ in range(self.V)])
         return views_s1, views_s2, torch.tensor(labels, dtype=torch.float32)
 
+
+class LeJEPAStreamingDataset(StreamingDataset):
+    def __init__(self, metadata, split, transform_s1, transform_s2, num_views=4, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.split = split
+        self.metadata = pd.read_parquet(metadata)
+        self.metadata1 = self.metadata[self.metadata['split'] == split]['s1_name'].to_list()
+        self.metadata2 = self.metadata[self.metadata['split'] == split]['patch_id'].to_list()
+        self.transform_s1 = transform_s1
+        self.transform_s2 = transform_s2
+
+        self.V = num_views
+
+    def __getitem__(self, idx):
+        mc_img_c_h_w1, mc_img_c_h_w2, labels = super().__getitem__(idx)
+
+        views_s1 = torch.stack([self.transform_s1(mc_img_c_h_w1) for _ in range(self.V)])
+        views_s2 = torch.stack([self.transform_s2(mc_img_c_h_w2) for _ in range(self.V)])
+        return views_s1, views_s2, labels

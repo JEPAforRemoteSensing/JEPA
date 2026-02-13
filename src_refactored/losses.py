@@ -60,8 +60,9 @@ class AsymmetricLoss(nn.Module):
 
 
 class LeJEPALoss(nn.Module):
-    def __init__(self, knots=17, t_max=5, num_slices=256, use_asl=False, gamma_neg=4, gamma_pos=0, clip=0.05):
+    def __init__(self, num_views, knots=17, t_max=5, num_slices=256, use_asl=False, gamma_neg=4, gamma_pos=0, clip=0.05):
         super().__init__()
+        self.num_views = num_views
         self.num_slices = num_slices
         t = torch.linspace(0, t_max, knots, dtype=torch.float32)
         dt = t_max / (knots - 1)
@@ -97,12 +98,13 @@ class LeJEPALoss(nn.Module):
         # Invariance/prediction loss:
         # Center = mean over ALL 2V views (cross-modal center) per sample
         # This is what pulls S1 and S2 representations together
-        inv_loss = (proj.mean(0) - proj).square().mean()
+        inv_loss = (proj[:self.num_views] - proj[:self.num_views].mean(0)).square().mean() + (proj[self.num_views:] - proj[self.num_views:].mean(0)).square().mean()
+        center_loss = (proj[:self.num_views].mean(0) - proj[self.num_views:].mean(0)).square().mean()
 
         if self.use_asl:
             probe_loss = self.asl_loss(yhat, y_rep.float())
         else:
             probe_loss = F.binary_cross_entropy_with_logits(yhat, y_rep.float())
 
-        return sigreg_loss, inv_loss, probe_loss
+        return sigreg_loss, inv_loss, probe_loss, center_loss
 
